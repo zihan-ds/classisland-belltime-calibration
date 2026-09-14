@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 回放工具（离线，不随插件打包）：复用插件的生产代码，对实机 dump 重跑一遍完整判定链。
+       与 TemplateTool 同样的「链接源码而非引用 DLL」方式，避免两套代码漂移。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>ReplayTool</AssemblyName>
+    <RootNamespace>BellTimeCalibration.Tools</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Services\WavReader.cs" />
+    <Compile Include="..\..\Services\BellTemplate.cs" />
+    <Compile Include="..\..\Services\TemplateMatcher.cs" />
+    <Compile Include="..\..\Services\CaptureAudio.cs" />
+    <Compile Include="..\..\Services\RingDetector.cs" />
+    <Compile Include="..\..\Services\RingCandidateSelector.cs" />
+    <Compile Include="..\..\Services\OnsetGate.cs" />
+    <Compile Include="..\..\Services\DriftFitter.cs" />
+  </ItemGroup>
+
+</Project>

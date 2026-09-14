@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BellTimeCalibration</AssemblyName>
+    <RootNamespace>BellTimeCalibration</RootNamespace>
+    <Authors>zihan_ds</Authors>
+    <Copyright>Copyright (C) 2026 zihan_ds</Copyright>
+    <!-- 指定 RID 使 NuGet 仅解析并拷贝当前平台的 SoundFlow 原生库（miniaudio.dll）；
+         关闭 RID 附加到输出路径，保持输出目录扁平不变 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ClassIsland.PluginSdk" Version="2.0.0.2">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="SoundFlow" Version="1.4.1" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SoundFlow 1.4.1 自带的 SoundFlow.targets 引用了不存在的 runtimes\win-x64\native\libminiaudio.dll
+         （包内实际命名为 miniaudio.dll，Windows 命名不匹配），原生库不会自动进入插件输出目录；
+         类库工程也不会自动拷贝 runtimes 原生资产，故此处显式复制当前平台的 miniaudio.dll，
+         保证运行时 DllImport "miniaudio" 可在插件目录解析。 -->
+    <None Include="$(PkgSoundFlow)\runtimes\win-x64\native\miniaudio.dll"
+          Link="miniaudio.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+    <!-- 根因：ClassIsland.PluginSdk 引用带 ExcludeAssets=runtime，沿依赖闭合压制了
+         SoundFlow.dll 的托管运行时拷贝（宿主自带旧版 SoundFlow 1.2.1，若解析到它会导致
+         MissingMethod 异常），故此处显式把 1.4.1 的托管程序集复制到插件输出目录，
+         与上面的 miniaudio.dll 同源（$(PkgSoundFlow)）。 -->
+    <None Include="$(PkgSoundFlow)\lib\net8.0\SoundFlow.dll"
+          Link="SoundFlow.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 离线工具不参与插件编译（tools/TemplateTool 自带独立工程） -->
+    <Compile Remove="tools/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="manifest.yml">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Include="icon.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
