@@ -1,0 +1,22 @@
+# ClassIsland 插件市场索引清单。
+# 提交方式：把本文件内容提交到 https://github.com/ClassIsland/PluginIndex 的 index/plugins-v2/ 目录，
+#           文件名必须与插件 id 一致（即 belltime.calibration.yml）。
+# 两点约束：
+#   1. 本清单的 version 会被生成器用 Release 的 tag 覆盖，tag 必须严格为 a.b.c.d（如 1.0.0.0）；
+#   2. Release 正文必须带 CLASSISLAND_PKG_MD5 注释（由打包目标 -p:CreateCipx=true 自动生成的 checksums.md 提供）。
+# 字段含义见 https://docs.classisland.tech/dev/plugins/publishing.html
+id: belltime.calibration
+name: 铃声自动校时
+description: 监听校园铃声自动校准 ClassIsland 时间偏移的插件。学习模式默认开启：仅记录识别结果，不自动应用校准偏移。
+entranceAssembly: "BellTimeCalibration.dll"
+url: https://github.com/zihan-ds/classisland-belltime-calibration
+version: 1.0.0.0
+apiVersion: 2.0.0.0
+author: zihan_ds
+icon: icon.png
+readme: README.md
+supportedOSPlatforms:
+  - Windows
+repoOwner: zihan-ds
+repoName: classisland-belltime-calibration
+assetsRoot: main/plugin
