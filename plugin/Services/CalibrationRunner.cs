@@ -1,0 +1,975 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using BellTimeCalibration.Models;
+
+namespace BellTimeCalibration.Services;
+
+/// <summary>
+/// 校准执行器（里程碑 M3+M4，v0.4.0 起单一内核通道）：订阅调度器的
+/// <see cref="CalibrationScheduler.BoundaryApproaching"/> 与 <see cref="CalibrationScheduler.BoundaryReached"/>，
+/// 在监听窗口内开麦捕获音频、做突发能量响铃检测，记录 t_ring 并按 delta = B_display − t_ring 输出校准记录。
+/// 学习模式只记录，绝不应用偏移；自动应用（IsLearningMode=false &amp;&amp; IsAutoApplyEnabled=true）时
+/// 仅经内核校时 API 通道（<see cref="KernelOffsetApplier"/>，绝对写入 delta_abs）写偏移，
+/// 经 <see cref="CorrectionPolicy"/> 的**残差死区**门控（v0.6.0：残差 = 当前内核偏移 − 本次 delta，
+/// 超过死区即应用，不再等「连续 2 次同号」）。
+/// v0.4.0 起课表平移（ProfileShift）通道已彻底移除：任何情况下都不再修改课表档案，
+/// 宿主内核未开放可写偏移 API 时自动应用停用（仅学习模式记录）。
+/// 门控：仅当 Config.IsEnabled 且（IsLearningMode 或 IsAutoApplyEnabled）时开麦。
+/// 每个监听窗口终结时向 calibration-history.jsonl 落一条结构化记录（含配置快照与结局），
+/// 供离线调参分析（见 <see cref="CalibrationHistory"/>）。
+/// </summary>
+public class CalibrationRunner : IDisposable
+{
+    private readonly CalibrationScheduler _scheduler;
+    private readonly object _sync = new();
+
+    /// <summary>内核校时应用通道（绝对偏移；宿主内核无对应 API 时为 null/不可用）。</summary>
+    private readonly IOffsetApplier? _kernelApplier;
+
+    /// <summary>当前选中的应用通道：仅当内核可用时为内核通道，否则 null（自动应用停用、只记录）。</summary>
+    private readonly IOffsetApplier? _active;
+
+    /// <summary>校正量门控策略（跨窗口累计同号 run；串行使用，见类注释）。</summary>
+    private readonly CorrectionPolicy _policy;
+
+    /// <summary>偏移拟合器（v0.7.0）：多次测量最小二乘拟合广播铃钟的规律性走时偏差。</summary>
+    private readonly DriftFitter _fitter = new();
+
+    /// <summary>大误差人工复核提醒（v1.0.4）；宿主未提供提醒能力时为 null，此时只记日志。</summary>
+    private readonly BellReviewNotifier? _reviewNotifier;
+
+    /// <summary>当前进行中的监听窗口；null = 空闲（上一窗口未结束时新窗口直接跳过）。</summary>
+    private ActiveWindow? _window;
+
+    /// <summary>当天历史样本是否已恢复（v1.0.1；只恢复一次，避免每个窗口重复计入）。</summary>
+    private bool _samplesRestored;
+
+    /// <summary>
+    /// 构造执行器并订阅调度器事件。宿主应用启动完成后由 Plugin 创建一次并持有，防止被 GC。
+    /// </summary>
+    /// <param name="scheduler">铃声监听调度器。</param>
+    /// <param name="kernelApplier">内核校时应用通道（可为 null；不可用时自动应用停用）。</param>
+    /// <param name="reviewNotifier">大误差人工复核提醒（可为 null：宿主未提供提醒能力时只记日志，不影响校准）。</param>
+    public CalibrationRunner(CalibrationScheduler scheduler, IOffsetApplier? kernelApplier, BellReviewNotifier? reviewNotifier = null)
+    {
+        _scheduler = scheduler;
+        _kernelApplier = kernelApplier;
+        _reviewNotifier = reviewNotifier;
+
+        // v0.4.0 起唯一应用通道为内核校时 API：可用则选中，否则无通道（绝不回退到改课表）
+        _active = kernelApplier?.IsAvailable == true ? kernelApplier : null;
+
+        _policy = new CorrectionPolicy(BellTimeCalibrationPlugin.Config.DeadZoneSeconds);
+
+        if (_active != null)
+        {
+            // v1.0.4：通道状态并入启动横幅（Plugin.cs 里那行「偏移通道 …（当前 …s）」），这里不再单独打一行。
+        }
+        else
+        {
+            Logger.Warn(
+                "[校时] 无可用内核校时 API 通道（宿主内核未开放 TimeOffset/OffsetSeconds 可写属性），" +
+                "自动应用停用，仅学习模式记录；绝不回退到课表平移。");
+        }
+
+        _scheduler.BoundaryApproaching += OnBoundaryApproaching;
+        _scheduler.BoundaryReached += OnBoundaryReached;
+    }
+
+    /// <summary>退订调度器事件。可安全重复调用。</summary>
+    public void Dispose()
+    {
+        _scheduler.BoundaryApproaching -= OnBoundaryApproaching;
+        _scheduler.BoundaryReached -= OnBoundaryReached;
+    }
+
+    /// <summary>当前监听窗口状态（仅在工作线程/UI 线程经 _sync 访问）。</summary>
+    private sealed class ActiveWindow
+    {
+        public required string Kind { get; init; }
+
+        /// <summary>课表边界 B_display（**显示时钟域** = 墙钟 + 内核 TimeOffsetSeconds）。</summary>
+        public required DateTime BDisplay { get; init; }
+
+        /// <summary>
+        /// 本窗口开启时冻结的内核时间偏移（秒），用于把 B_display 换算回裸墙钟域。
+        /// 窗口内冻结（而不是每次现读）：窗口跨越时若自动应用刚写过偏移，逐处现读会让同一次测量
+        /// 前后半段落在不同钟域，产生亚秒级跳变。
+        /// </summary>
+        public double KernelOffsetSeconds { get; init; }
+
+        /// <summary>窗口开启的墙钟时刻（UTC，BoundaryApproaching 触发时）。</summary>
+        public DateTime StartWallUtc { get; init; }
+
+        /// <summary>边界实际越过（BoundaryReached）的墙钟时刻（UTC）；null = 尚未越过。</summary>
+        public DateTime? ReachedWallUtc { get; set; }
+
+        /// <summary>
+        /// B_display → 裸墙钟（本地）。音频时间戳（<see cref="CaptureAudio.WallTimeAt"/> 与
+        /// <see cref="RingBurst.OnsetUtc"/>）都取自 <see cref="DateTime.UtcNow"/>，属裸墙钟域；
+        /// B_display 却含内核偏移（内核取时间 = 墙钟 + 偏移）。两者相减前必须换算到同一域，
+        /// 否则偏移每 1 s 就吃掉 1 s 的搜索余量（v0.9.1 修复：实机 15:40 曾出现
+        /// 「模板命中但起响点偏差 15.18s 超出搜索半窗 ±12s」——正是 15.44 − 0.8 的错位）。
+        /// </summary>
+        public DateTime BWallLocal => BDisplay.AddSeconds(-KernelOffsetSeconds);
+    }
+
+    /// <summary>
+    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.1）。
+    /// 目的：进程重启不再清空当天的样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
+    /// 期间偏移会有 1~2 次无谓的小跳（2026-09-15 10:05 重启实测即如此）。
+    /// 只恢复当天：跨天的基准可能已被人为校准改变，混入会污染中位数。
+    /// 失败只记日志，不影响校准主链路。
+    ///
+    /// v1.0.4：恢复的是**当天全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
+    /// 由中位数与跳变检测兜住单点脏值；手动拟合另有一套更严格的「只取有效样本」口径，见
+    /// <see cref="ManualFitService"/>（两处口径不同是刻意的：手动拟合没有中位数的样本量优势）。
+    /// </summary>
+    private void RestoreTodaySamplesOnce()
+    {
+        if (_samplesRestored)
+            return;
+        _samplesRestored = true;
+
+        try
+        {
+            var today = OffsetSampleStore.LoadToday(DateTime.Now, out _);
+            if (today.Count == 0)
+            {
+                Logger.InfoIfChanged("samples", "[校时] 样本 当天 0 条");
+                return;
+            }
+
+            // v1.0.5：旁证样本（只课表命中 / 双窗口冲突）**不进运行时估计器** —— 它们不是「开关窗口」
+            // 的测量，而运行时口径是「当天全部样本 + 中位数」，会把它当成一次普通测量照单全收。
+            // 手动拟合另有一套「只取勾选样本」的口径（见 ManualFitService），两处刻意不同。
+            var seedable = today.Where(s => !s.IsSideEvidence).ToList();
+            var seeded = _fitter.Seed(seedable.Select(s => (s.At, s.RequiredSec)));
+            // v1.0.4：一行短摘要 + 内容未变不重复打（同一份摘要原先每窗口都写一遍，130+ 字）。
+            Logger.InfoIfChanged("samples",
+                $"[校时] 样本 {OffsetSampleStore.Summarize(today)} 导入{seeded}｜中位{_fitter.MedianSeconds:F3}s({_fitter.SampleCount})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 偏移样本恢复失败（不影响校准）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 手动拟合（设置页按钮）改写偏移后调用：按当前样本文件重新装入当天序列，
+    /// 使运行时估计器与刚写下的值一致 —— 否则下一个边界会用旧序列再算一次、把手动结果顶掉。
+    /// 复用 <see cref="RestoreTodaySamplesOnce"/> 的同一套导入逻辑（不在这里另写一遍），
+    /// 只是先把「已恢复」标记清掉。线程安全由 <see cref="DriftFitter"/> 内部锁保证。
+    /// </summary>
+    public void ReloadTodaySamples()
+    {
+        lock (_sync)
+        {
+            _samplesRestored = false;
+            RestoreTodaySamplesOnce();
+        }
+    }
+
+    /// <summary>
+    /// 边界逼近（调度器 tick 线程）：门控通过且无窗口在进行时，记录窗口信息并
+    /// 异步启动一次麦克风捕获。捕获结束后在后台线程完成结果处理。
+    /// </summary>
+    private void OnBoundaryApproaching(object? sender, BoundaryApproachingEventArgs e)
+    {
+        try
+        {
+            var config = BellTimeCalibrationPlugin.Config;
+            if (!config.IsEnabled || !(config.IsLearningMode || config.IsAutoApplyEnabled))
+                return;
+
+            RestoreTodaySamplesOnce();
+
+            lock (_sync)
+            {
+                if (_window != null)
+                {
+                    Logger.Info(
+                        $"[校时] 边界（{e.BoundaryKind} {e.BoundaryDisplayTime:HH:mm:ss.fff}）逼近时上一监听窗口仍在进行，本次跳过。");
+
+                    // 结构化历史：防重入跳过同样落一条（无捕获，EndedBy=n/a）
+                    var skipped = NewRecord(
+                        e.BoundaryKind,
+                        e.BoundaryDisplayTime.ToString(CalibrationHistory.ClockFormat),
+                        startWallUtc: null,
+                        BellTimeCalibrationPlugin.Config);
+                    skipped.Outcome = "skipped-busy";
+                    skipped.EndedBy = "n/a";
+                    CalibrationHistory.Append(skipped);
+                    return;
+                }
+
+                _window = new ActiveWindow
+                {
+                    Kind = e.BoundaryKind,
+                    BDisplay = e.BoundaryDisplayTime,
+                    KernelOffsetSeconds = _active?.CurrentOffsetSeconds ?? 0,
+                    StartWallUtc = DateTime.UtcNow
+                };
+            }
+
+            var detector = new RingDetector(BellTimeCalibrationPlugin.Config.DetectionSensitivity);
+            // fire-and-forget：内部全程 try/catch，无异常逃逸；不得阻塞调度器 tick 线程
+            _ = RunWindowAsync(detector);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[校时] BoundaryApproaching 处理异常：{ex}");
+        }
+    }
+
+    /// <summary>
+    /// 边界到达（调度器 tick 线程）：与当前窗口匹配（边界类型与 B_display 相同）时记录到达墙钟时刻，
+    /// 捕获循环据此在到达后继续监听 WindowSeconds 秒。
+    /// </summary>
+    private void OnBoundaryReached(object? sender, BoundaryReachedEventArgs e)
+    {
+        try
+        {
+            lock (_sync)
+            {
+                var w = _window;
+                if (w != null
+                    && w.Kind == e.BoundaryKind
+                    && w.BDisplay == e.BoundaryDisplayTime
+                    && w.ReachedWallUtc == null)
+                {
+                    w.ReachedWallUtc = DateTime.UtcNow;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[校时] BoundaryReached 处理异常：{ex}");
+        }
+    }
+
+    /// <summary>
+    /// 捕获循环体（后台线程）：执行捕获 → 关闭窗口 → 依结果记录人类日志与结构化历史。
+    /// 每个终结路径恰好向 <see cref="CalibrationHistory"/> 落一条记录（含配置快照与结局），
+    /// 无突发/初始化失败/异常同样落一条。
+    /// </summary>
+    private async Task RunWindowAsync(RingDetector detector)
+    {
+        // 本窗口实例：finally 兜底只清理“仍是本窗口”的 _window，绝不误伤随后新建的窗口
+        ActiveWindow? window = null;
+        CalibrationHistoryRecord? rec = null;
+        var appended = false;
+        try
+        {
+            var config = BellTimeCalibrationPlugin.Config;
+
+            // 捕获前先取窗口快照（锁内）；捕获期间 ShouldContinue 仍以 _window 为准
+            lock (_sync)
+            {
+                window = _window;
+            }
+
+            if (window == null)
+                return; // 理论竞态：窗口已被关闭，无信息可记录（该窗口已由其自身路径记录）
+
+            // 结构化记录骨架：配置快照在捕获开始前读取（≈窗口开启时刻）
+            rec = NewRecord(
+                window.Kind,
+                window.BDisplay.ToString(CalibrationHistory.ClockFormat),
+                window.StartWallUtc,
+                config);
+
+            var hardTimeout = TimeSpan.FromSeconds(
+                config.ArmedLeadSeconds + config.WindowSeconds + 15);
+
+            // v0.9.0：启用模板匹配时保留窗口音频（仅内存），供模板匹配定位起响点
+            var keepAudio = config.EnableTemplateMatch && TemplateLibrary.Templates.Count > 0;
+            var result = await MicCaptureService.CaptureAsync(detector, ShouldContinue, hardTimeout, keepAudio);
+
+            // 捕获结束：关闭窗口（允许下一边界布防）；实例安全，避免误关随后新建的窗口
+            lock (_sync)
+            {
+                if (_window == window)
+                    _window = null;
+            }
+
+            // ── 越界时刻回填（v1.0.5）──
+            // 原先这三行只在「路径 d：有可信测量」的分支里执行，于是**没测到铃**的窗口即使越界成功
+            // 也把 ReachedWall/LeadActualSec 丢了：2026-10-07 一天就有 5 条 EndedBy=normal、
+            // CaptureSec≈39.9s（说明确实越界、且 ShouldContinue 正常收尾）却三个字段全空的记录，
+            // 离线根本判断不出「这次有没有等到切换、等到了多久之后」。
+            // 越界与「测没测到铃」无关，所以提到窗口刚关闭处、所有路径之前。
+            // OffsetFromReachedSec / ShiftSec 仍留在路径 d —— 它们要用 t_ring。
+            DateTime? reachedUtc;
+            lock (_sync)
+            {
+                reachedUtc = window.ReachedWallUtc;
+            }
+
+            if (reachedUtc != null)
+            {
+                rec.ReachedWall = reachedUtc.Value.ToLocalTime().ToString(CalibrationHistory.LocalFormat);
+                rec.LeadActualSec = Math.Round((reachedUtc.Value - window.StartWallUtc).TotalSeconds, 3);
+            }
+
+            // 路径 a：捕获初始化失败（无默认设备/设备被占用/引擎异常等）
+            if (result == null)
+            {
+                rec.Outcome = "init-failed";
+                rec.EndedBy = "n/a";
+                CalibrationHistory.Append(rec);
+                appended = true;
+
+                Logger.Warn(
+                    $"[校时] 边界（{window.Kind} {window.BDisplay:HH:mm:ss.fff}）麦克风捕获初始化失败，本次监听作废（详见上方错误日志）。");
+                return;
+            }
+
+            // 调试音频转存（默认关闭）：开启时把本窗口音频写成 WAV，供离线核对实机铃声、重建模板
+            if (config.DebugDumpAudio && result.Audio is { Length: > 0 })
+                DumpWindowAudio(result.Audio, window);
+
+            // ── 路径 a2：整窗静默（v0.10.4）──
+            // 麦克风偶发未进音时，音频是纯数字静默；此时任何「比值」类判据都会变成噪声除噪声，
+            // 凑出假的起响沿（实机 2026-09-14 09:40：噪声底 −80 dBFS、峰值 −114.5 dBFS，
+            // 却被判为 detected、还写进了历史）。这类窗口必须在入口就作废，绝不让它进入任何判据或统计。
+            // 判据用「本窗峰值 RMS」这一绝对量，与铃声实测电平（−6.8~−34.4 dBFS）之间留 ≥16 dB 余量。
+            if (result.Audio is { Length: > 0 } silentAudio)
+            {
+                double peakSum = 0;
+                for (var i = 0; i < silentAudio.Length; i++)
+                    peakSum += (double)silentAudio.Samples[i] * silentAudio.Samples[i];
+                var windowPeakRms = Math.Sqrt(peakSum / silentAudio.Length);
+
+                if (windowPeakRms < OnsetGate.AbsoluteMinRms)
+                {
+                    rec.Outcome = "silent-window";
+                    rec.EndedBy = "n/a";
+                    rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+                    rec.NoiseFloorDb = result.NoiseFloorDb;
+                    rec.PeakDb = result.MaxRmsDb;
+                    CalibrationHistory.Append(rec);
+                    appended = true;
+
+                    Logger.Warn(
+                        $"[校时] 整窗静默（本窗峰值 {20 * Math.Log10(Math.Max(windowPeakRms, 1e-12)):F1} dBFS，" +
+                        $"低于下限 {20 * Math.Log10(OnsetGate.AbsoluteMinRms):F1} dBFS）→ 判为麦克风未进音，" +
+                        $"边界（{window.Kind} {window.BDisplay:HH:mm:ss.fff}）本次作废，不参与任何判据与统计。");
+                    return;
+                }
+            }
+
+            // ── 候选静置过滤 + 有效铃选择（v0.3.0 检测硬化）──
+            // 原始全量候选（含开麦静置期伪影）写入结构化历史，便于离线复核判定过程；
+            // 有效铃判定只在静置过滤后的候选上进行。
+            if (result.Candidates.Count > 0)
+            {
+                var rawCandidatesLocal = new List<string>(result.Candidates.Count);
+                foreach (var c in result.Candidates)
+                {
+                    rawCandidatesLocal.Add(c.ToLocalTime().ToString(CalibrationHistory.LocalFormat));
+                }
+
+                rec.Candidates = rawCandidatesLocal;
+            }
+
+            var postSettle = RingCandidateSelector.ExcludeSettlePeriod(result.Bursts, window.StartWallUtc);
+
+            // 模板兜底路径的搜索半窗取配置项 ToleranceSeconds（默认 12s）；闸门主判据的半窗是 OnsetGate.GateSeconds 内建常量
+            var tolerance = TimeSpan.FromSeconds(config.ToleranceSeconds);
+
+            // ── 钟域统一（v0.9.1）──
+            // 音频时间戳与候选起响点全部来自 DateTime.UtcNow（裸墙钟域），而 B_display 含内核偏移。
+            // 下面所有与音频比较的量（搜索区间、模板偏差判定、delta）一律使用 B_wall = B_display − 偏移；
+            // 只有「历史/日志里对人类展示的边界时刻」和忽略列表匹配仍用 B_display。
+            var boundaryWallLocal = window.BWallLocal;
+
+            // ── 主路径（v0.10.0，路线 2）：起响沿闸门 ──
+            // 在「窗口中心 ±OnsetGate.GateSeconds」内找起响比值最大处，一步完成两件事：
+            // ① 排除提前 6~15 s 的那次强起响（2026-09 那批 dump 里主铃落在边界 ±0.6 s 内；2026-10-12 复算改判为
+            //    本校钟声第一击落在标称边界 +1.0~+2.5 s，半窗因此由 2 s 加宽到 8 s，理由见 OnsetGate.GateSeconds）；
+            // ② 排除渐强噪声（实测伪匹配绝对电平甚至比真铃更响，但起响比值只有 1~3×）。
+            // 不依赖波形对齐 —— 实测同一「下课铃」在各边界的波形互相关仅 0.08~0.64，
+            // 精确模板匹配跨边界 0 命中（详见 plugin/tools/README.md 验收表与 bell-recordings/对照记录.md）。
+            //
+            // v1.0.4 增补：**双窗口复核**。上面的窗口中心是 B_wall = B_display − 偏移，即内核真正切换的位置，
+            // 而它本身正是要被校准的量 —— v1.0.5 前半窗只有 ±2 s，偏移一旦偏出 2 s，闸门就只看得到开关附近的杂音
+            // （2026-09-20 上午 4 个下课窗口各写入 +0.3~+1.3 s，把偏移从 6.34 推到 8.13，而真铃那时就在课表边界上、
+            // 还强 14~18 dB）。2026-10-12 起半窗加宽到 8 s，这种「真铃落在窗外」已基本消失，
+            // 复核继续保留：课表窗口的中心与当前偏移无关，是偏移长期跑偏时唯一还能看见真铃的锚点。
+            // 因此再扫一遍以**标称边界**（与当前偏移无关）为中心的同一判据窗口，两侧一致才照旧采用。
+            OnsetGate.OnsetHit? gateHit = null;
+            OnsetGate.OnsetHit? switchHitRaw = null;   // 原始开关窗口命中（供日志与冲突提醒；Reconcile 会把冲突时的返回值清成 null）
+            string gateNote = "";
+            OnsetGate.OnsetHit? scheduleHit = null;
+            string scheduleNote = "";
+            string reconcileNote = "";
+            var verdict = OnsetGate.WindowVerdict.None;
+            // 课表窗口中心 = 标称边界的真实墙钟。显示域 = 真墙钟 + 偏移，且 B_wall = B_display − 偏移，
+            // 故 B_display = B_wall + 偏移；当前偏移读数拿不到时按 0 处理（此时两窗口重合、天然一致）。
+            var scheduleCenterLocal = boundaryWallLocal.AddSeconds(_active?.CurrentOffsetSeconds ?? 0);
+            if (result.Audio != null && result.Audio.Length > 0)
+            {
+                switchHitRaw = OnsetGate.Find(result.Audio, boundaryWallLocal, out gateNote);
+                scheduleHit = OnsetGate.Find(result.Audio, scheduleCenterLocal, out scheduleNote);
+
+                gateHit = OnsetGate.Reconcile(switchHitRaw, scheduleHit, out verdict, out reconcileNote);
+
+                // v1.0.4 日志瘦身：这一行原先回抄两段完整判据（各 130+ 字）。改成按字段拼短摘要——
+                // 完整判据仍在两份 note 里（命中时进结构化历史 GateNote），需要时按 dump 离线复算即可。
+                Logger.Info(
+                    $"[校时] 闸门 {ShortHit("开", switchHitRaw, boundaryWallLocal)}" +
+                    $"｜{ShortHit("表", scheduleHit, scheduleCenterLocal)}" +
+                    $"｜复核 {ShortVerdict(verdict)}");
+
+                // v1.0.5 补（对称支配）：课表窗口明显更强时采用课表窗口的坐标 —— 这是与「冲突」截然不同的
+                // 处置（那次是**不写**），且使用者需要知道「这次为什么用了另一侧」，所以单独记一行 WARN。
+                // 不弹提醒、也不落旁证样本：本次是一次正常测量（t_ring 来自课表窗口，下游管线与窗口无关）。
+                if (verdict == OnsetGate.WindowVerdict.PreferSchedule)
+                {
+                    Logger.Warn(
+                        $"[校时] 双窗口不一致，采用课表窗口坐标（{window.Kind} {window.BDisplay:HH:mm:ss}）：" +
+                        $"{ShortHit("开", switchHitRaw, boundaryWallLocal)}｜{ShortHit("表", scheduleHit, scheduleCenterLocal)}" +
+                        $"｜{reconcileNote}");
+                }
+            }
+
+            // ── 路径 b0：双窗口冲突（v1.0.4；v1.0.5 起落旁证样本）──
+            // 两侧各自都测到合格起响沿、位置却不一致，且课表窗口明显更强：说明当前偏移已经把闸门锚在了
+            // 错误的位置上。此时**绝不写入偏移**：写进去的"小修正"其实是杂音的坐标，正是 2026-09-20 上午把偏移
+            // 从 6.338 推到 8.132 的原因。也不落**普通**样本（脏样本会污染中位数估计）——
+            // 但 v1.0.5 起落一条**旁证样本**（默认不参与拟合），只记日志/历史并提醒人工。
+            if (verdict == OnsetGate.WindowVerdict.Conflict)
+            {
+                rec.Outcome = "match-conflict";
+                rec.EndedBy = result.EndedBy;
+                rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+                rec.NoiseFloorDb = result.NoiseFloorDb;
+                rec.PeakDb = result.MaxRmsDb;
+                rec.Gate = "skipped";
+                rec.GateNote = $"match-conflict；{reconcileNote}";
+                CalibrationHistory.Append(rec);
+                appended = true;
+
+                // 冲突必须让人看见（甚至弹提醒），所以这一行保留两侧证据与判定说明，只把两段完整判据
+                // （各 130+ 字）换成短摘要——冲突时真正需要的是「两侧各测到什么时候、差多少」。
+                Logger.Warn(
+                    $"[校时] 双窗口冲突，本次不写入（{window.Kind} {window.BDisplay:HH:mm:ss}）：" +
+                    $"{ShortHit("开", switchHitRaw, boundaryWallLocal)}｜{ShortHit("表", scheduleHit, scheduleCenterLocal)}" +
+                    $"｜{reconcileNote}");
+
+                _reviewNotifier?.NotifyConflict(new BellReviewConflictArgs
+                {
+                    BoundaryKind = window.Kind,
+                    BoundaryDisplay = window.BDisplay,
+                    SwitchOnsetLocal = switchHitRaw?.OnsetUtc.ToLocalTime(),
+                    ScheduleOnsetLocal = scheduleHit?.OnsetUtc.ToLocalTime(),
+                    SwitchPeakDb = switchHitRaw == null ? null : ToDb(switchHitRaw.Value.PeakRms),
+                    SchedulePeakDb = scheduleHit == null ? null : ToDb(scheduleHit.Value.PeakRms),
+                    NotificationEnabled = config.EnableReviewNotification
+                });
+
+                // v1.0.5：冲突不再彻底静默 —— 落一条旁证样本（默认不参与拟合），
+                // 让「这段时间一条样本都没有」变成「有一条待人工确认的测量」。坐标取课表窗口
+                // （冲突的定义就是课表窗口明显更强）；人工确认铃况后可勾选参与拟合。
+                if (scheduleHit != null)
+                    AppendSideSample(window, scheduleHit.Value, SampleReason.SideConflict, scheduleCenterLocal);
+                return;
+            }
+
+            // ── 辅助路径：模板匹配（闸门未命中时才尝试，命中则省一次全区间扫描）──
+            // 模板匹配保留但降级：它在个别窗口能给出毫秒级起响点（9/11 21:30 下课铃 NCC 0.968），
+            // 但跨边界不稳定，故不作主判据。
+            DateTime? templateOnsetUtc = null;
+            string templateNote = "";
+            if (gateHit == null && keepAudio && result.Audio != null)
+            {
+                var audio = result.Audio;
+                var settleSample = (int)(RingCandidateSelector.SettleSkipSeconds * CaptureAudio.SampleRate);
+                var boundaryUtc = boundaryWallLocal.ToUniversalTime();
+                var fromSample = Math.Max(settleSample, audio.SampleIndexAt(boundaryUtc - tolerance));
+                var toSample = Math.Min(audio.Length, audio.SampleIndexAt(boundaryUtc + tolerance));
+
+                var match = fromSample < toSample
+                    ? RingCandidateSelector.SelectByTemplate(
+                        TemplateLibrary.Templates, audio, fromSample, toSample,
+                        boundaryWallLocal, tolerance, config.MatchNccMin, config.MatchSpectralMin,
+                        out templateNote)
+                    : null;
+                if (fromSample >= toSample)
+                    templateNote = "搜索区间无效（音频缓冲不足）";
+
+                if (match != null)
+                {
+                    templateOnsetUtc = audio.WallTimeAt(match.Value.OnsetSampleIndex);
+                    rec.MatchedTemplate = match.Value.Label;
+                    rec.MatchNcc = Math.Round(match.Value.Ncc, 4);
+                    rec.MatchSpectral = Math.Round(match.Value.SpectralSim, 4);
+                    Logger.Info($"[校时] 模板匹配命中（{templateNote}）。");
+                }
+                else
+                {
+                    Logger.Info($"[校时] 模板匹配未命中（{templateNote}）。");
+                }
+            }
+
+            // 路径 b：静置过滤后无任何候选段，且闸门与模板都没命中 → 无突发能量
+            if (postSettle.Count == 0 && templateOnsetUtc == null && gateHit == null)
+            {
+                rec.Outcome = "no-burst";
+                rec.EndedBy = result.EndedBy;
+                rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+                rec.NoiseFloorDb = result.NoiseFloorDb;
+                rec.PeakDb = result.MaxRmsDb;
+                CalibrationHistory.Append(rec);
+                appended = true;
+
+                var artifactNote = result.Candidates.Count > 0
+                    ? $"（原始候选 {result.Candidates.Count} 个均落在开麦静置 {RingCandidateSelector.SettleSkipSeconds:F1}s 内，已忽略）"
+                    : "";
+                Logger.Info(
+                    $"[校时] 窗口内未检测到突发能量（噪声底 {result.NoiseFloorDb:F1} dBFS），" +
+                    $"边界（{window.Kind} B_display={window.BDisplay:HH:mm:ss.fff}）本次作废。{artifactNote}");
+                return;
+            }
+
+            // 路径 c：闸门与模板都没找到铃声 → 本次不作校准，也不写入任何偏移
+            // v0.10.2：启发式选铃（最长/最响持续段）已确认不可靠，彻底移除：
+            // 08:10 → e=−7.8 s、14:50 → −6.2 s、11:20 → +8.1 s、10:30 → +4.9 s（全部是选错事件）。
+            // 用户要求「较大误差时坚决不用脏值和已被确认不准的办法」——
+            // 本插件的输出要么是可信测量（起响沿闸门 / 模板匹配，二者都带独立的真伪判据），
+            // 要么是「无可靠测量」，不存在中间态。日志与结构化历史同样只记录可信结果。
+            if (gateHit == null && templateOnsetUtc == null)
+            {
+                rec.Outcome = keepAudio ? "no-trusted-match" : "no-ring";
+                rec.EndedBy = result.EndedBy;
+                rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+                rec.NoiseFloorDb = result.NoiseFloorDb;
+                rec.PeakDb = result.MaxRmsDb;
+                // TRing/DeltaSec/ShiftSec/Gate 保持 null：无可信测量即不作任何推算与应用
+                // v1.0.4：把三条来源的短说明也写进历史（GateNote 是既有字段），这样日志瘦身后
+                // 「为什么这次没测到」仍然可离线查。
+                rec.GateNote = keepAudio
+                    ? $"闸门 {gateNote}｜课表窗口 {scheduleNote}｜模板 {templateNote}"
+                    : $"闸门 {gateNote}";
+                CalibrationHistory.Append(rec);
+                appended = true;
+
+                Logger.Info(
+                    $"[校时] 无可信测量({rec.Outcome}) {window.Kind} B={window.BDisplay:HH:mm:ss}" +
+                    $"｜闸门 {gateNote}｜表 {scheduleNote}" +
+                    (keepAudio ? $"｜模板 {templateNote}" : "") +
+                    $"｜噪{result.NoiseFloorDb:F1} 峰{result.MaxRmsDb:F1}");
+
+                // v1.0.5：只课表命中时落一条旁证样本（默认不参与拟合）—— 这正是 2026-10-07 20:00 / 20:10
+                // 两个窗口的处境：偏移刚被人工改动 20+ s，开麦时铃已响过或起响淹没在环境声里，
+                // 只有课表窗口还能给出坐标。旧版本这类窗口既不写偏移、也不留样本行，使用者只看到「样本流断了」。
+                if (scheduleHit != null)
+                    AppendSideSample(window, scheduleHit.Value, SampleReason.SideSchedule, scheduleCenterLocal);
+                return;
+            }
+
+            // 路径 d：检测到可信测量 —— t_ring 优先级：起响沿闸门 > 模板匹配
+            // （两者都不会走到这里为 null，故无需空值容忍）
+            var tRingUtc = gateHit?.OnsetUtc ?? templateOnsetUtc!.Value;
+            var tRingLocal = tRingUtc.ToLocalTime();
+            // delta 与 t_ring 同域（裸墙钟）相减：delta = B_wall − t_ring，正值 = 铃早于边界
+            var delta = boundaryWallLocal - tRingLocal;
+            var windowDuration = (DateTime.UtcNow - window.StartWallUtc).TotalSeconds;
+            var sourceNote = gateHit != null
+                ? $"闸门({ShortVerdict(verdict)})"
+                : $"模板 {rec.MatchedTemplate ?? "命中"}";
+
+            // v1.0.4：一行短摘要。原先这一行把闸门/模板的完整判据又抄了一遍（300~400 字/行），
+            // 而同样内容已经在上面那行与结构化历史里各有一份。
+            Logger.Info(
+                $"[校时] 响铃 {window.Kind} B={window.BDisplay:HH:mm:ss} 铃={tRingLocal:HH:mm:ss.fff}" +
+                $" Δ{delta.TotalSeconds:+0.000;-0.000;0.000} 源={sourceNote}" +
+                $" 噪{result.NoiseFloorDb:F1} 峰{result.MaxRmsDb:F1} 监听{windowDuration:F1}s");
+
+            // ── 结构化历史：检测字段（Candidates 已在上方写入原始全量）──
+            rec.Outcome = "detected";
+            rec.EndedBy = result.EndedBy;
+            rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+            rec.NoiseFloorDb = result.NoiseFloorDb;
+            rec.PeakDb = result.MaxRmsDb;
+            rec.TRing = tRingLocal.ToString(CalibrationHistory.LocalFormat);
+            rec.DeltaSec = Math.Round(delta.TotalSeconds, 3);
+
+            // ReachedWall 已在窗口关闭处回填（v1.0.5），这里只补需要 t_ring 的两个时序字段
+            if (reachedUtc != null)
+            {
+                var offset = (tRingUtc - reachedUtc.Value).TotalSeconds;
+                rec.OffsetFromReachedSec = Math.Round(offset, 3);
+                rec.ShiftSec = Math.Round(offset, 3);
+            }
+
+            // 应用管线（v0.4.0 起仅内核通道；内部把 Gate/GateNote/Channel 写进 rec）
+            // v0.6.1+：把「实测切换墙钟」与「实测铃响起响点」一并交给应用管线，用真实误差 e = t_ring − t_switch 做判据。
+            // v0.10.2：走到这里的测量**必然来自起响沿闸门或模板匹配**（都带独立真伪判据），
+            // 测量来源已由上面两条路径保证，因此应用管线不再需要「来源可信度」参数。
+            TryApplyCalibration(delta, tRingUtc, reachedUtc, window.Kind, window.BDisplay, config, rec,
+                out var sampleRequired, out var sampleCurrent, out var sampleReason);
+
+            // v1.0.1：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
+            // 并留下可直接画走势的离线分析数据。只有走到应用管线的可信测量才落盘。
+            // v1.0.5：一并落盘判据位置（写没写、为什么没写），界面「判据位置」列直接显示它。
+            if (sampleRequired != null || sampleCurrent != null)
+            {
+                OffsetSampleStore.Append(
+                    tRingLocal, sampleRequired ?? delta.TotalSeconds, sampleCurrent ?? 0,
+                    window.Kind, window.BDisplay.ToString(CalibrationHistory.ClockFormat),
+                    applied: rec.Gate == "applied", reason: sampleReason);
+            }
+
+            CalibrationHistory.Append(rec);
+            appended = true;
+        }
+        catch (Exception ex)
+        {
+            // 路径 d：外层异常兜底——同样落一条（rec 未落过才补落）
+            if (!appended && rec != null)
+            {
+                rec.Outcome = "error";
+                rec.EndedBy = "n/a";
+                CalibrationHistory.Append(rec);
+            }
+
+            Logger.Error($"[校时] 监听窗口处理异常：{ex}");
+        }
+        finally
+        {
+            // 兜底：确保本窗口最终被清理，同时不误伤后续新建的窗口。
+            // - window != null：本窗口已在正常路径清理过；仅当 _window 仍是本窗口时才再清
+            //   （若期间新窗口已创建则保留，避免误杀）。
+            // - window == null：异常发生在清理段之前，_window 只能是本窗口自己
+            //   （新窗口在旧窗口清理前无法通过防重入门控创建），直接清空即可。
+            lock (_sync)
+            {
+                if (window == null)
+                    _window = null;
+                else if (_window == window)
+                    _window = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 大误差复核阈值（秒）的兜底值（v1.0.4）：实际阈值取配置项
+    /// <see cref="BellCalibrationSettings.LargeErrorLimitSeconds"/>，此项仅用于配置缺省/被置零时的兜底。
+    ///
+    /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；出现更大的值通常意味着
+    /// 校铃钟被人工大规模校准过、或系统时钟发生跳变 —— 两种情况都值得人工看一眼，
+    /// 而不是让插件静静地把偏移改掉几秒。用户要求：**遇到较大误差时坚决不用脏值**。
+    ///
+    /// 注意这**不是**抑制正常的首次收敛：闸门/模板都是可信来源，其 |e| 落在阈值内时照常写入。
+    /// </summary>
+    public const double DefaultLargeErrorLimitSeconds = 3.0;
+
+    /// <summary>
+    /// 应用管线（捕获完成的后台线程，每个窗口最多执行一次；v0.4.0 起仅内核通道）：
+    /// v0.6.1 口径 = 以**实测误差** e = t_ring（铃响墙钟）− t_switch（宿主真正切换的墙钟）为判据，
+    /// 二者同为墙钟，任何未知的偏移来源（内核额外偏移/手工调整/时钟偏差）都自动抵消；
+    /// |e| ≥ 死区即校正，校正量为**相对更新** 当前偏移 − e（不依赖 delta 与偏移的换算假设）。
+    /// 未观测到切换时刻（BoundaryReached 丢失）时退化为 v0.6.0 的绝对口径 delta_abs。
+    /// 各返回路径把 Gate/GateNote/Channel 写进结构化历史记录 <paramref name="rec"/>。
+    /// v0.10.2：走到这里的测量必然来自起响沿闸门或模板匹配，
+    /// 故不再需要「来源可信度」参数；另加大误差复核。
+    /// v1.0.4：大误差阈值改为配置项，并在拒写的同时经 <see cref="BellReviewNotifier"/> 弹出人工复核提醒。
+    /// </summary>
+    /// <param name="deltaAbs">绝对口径的所需偏移（未观测到切换时的退化值）。</param>
+    /// <param name="tRingUtc">物理响铃起响点（UTC）。</param>
+    /// <param name="switchWallUtc">实测切换墙钟（UTC）；null = 未观测到切换。</param>
+    /// <param name="boundaryKind">边界类型（中文），仅用于提醒文案与日志。</param>
+    /// <param name="boundaryDisplay">课表边界 B_display，仅用于提醒文案与日志。</param>
+    /// <param name="config">当前配置快照。</param>
+    /// <param name="rec">结构化历史记录（本方法写入 Gate/GateNote/Channel）。</param>
+    /// <param name="requiredSeconds">输出：本次测得的「所需绝对偏移」（秒）；因学习模式/未启用自动应用/不可信来源而未走到该步时为 null。</param>
+    /// <param name="currentOffsetSeconds">输出：本次测量时的当前偏移（秒）；未读取到时为 null。</param>
+    private void TryApplyCalibration(
+        TimeSpan deltaAbs,
+        DateTime tRingUtc,
+        DateTime? switchWallUtc,
+        string boundaryKind,
+        DateTime boundaryDisplay,
+        BellCalibrationSettings config,
+        CalibrationHistoryRecord rec,
+        out double? requiredSeconds,
+        out double? currentOffsetSeconds,
+        out SampleReason sampleReason)
+    {
+        requiredSeconds = null;
+        currentOffsetSeconds = null;
+        // v1.0.5：判据位置由这里决定并落盘（不再靠「没写入 + 差值小」反推 —— 那套代理把
+        // 「预测落在死区」误标成了「大误差拒写」，2026-10-07 一天就误标 6 条）。
+        sampleReason = SampleReason.Unknown;
+        try
+        {
+            if (config.IsLearningMode)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = "learning-mode";
+                Logger.Info("[校时] 学习模式：仅记录，本次不应用偏移。");
+                return;
+            }
+
+            if (!config.IsAutoApplyEnabled)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = "auto-apply-off";
+                Logger.Info("[校时] 未启用自动应用：本次仅记录。");
+                return;
+            }
+
+            if (_active == null)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = "no-channel";
+                Logger.Warn("[校时] 无可用内核校时 API 通道，本次仅记录（绝不改课表）。");
+                return;
+            }
+
+            // 唯一通道：写入「应用设置 → 时钟 → 时间偏移」
+            rec.Channel = "settings";
+
+            // 死区每次窗口按当前配置刷新（用户改设置后无需重启即生效）
+            _policy.DeadZoneSeconds = config.DeadZoneSeconds;
+
+            var currentOffset = _active.CurrentOffsetSeconds ?? 0;
+            currentOffsetSeconds = currentOffset;
+
+            // 本次「让误差归零所需的绝对偏移」：实测误差 e 直接给出 —— 所需偏移 = 当前偏移 − e
+            TimeSpan required;
+            string basis;
+
+            if (switchWallUtc != null)
+            {
+                // 实测误差：正 = 铃晚于切换（切换偏早），负 = 铃早于切换（切换偏晚）
+                var e = tRingUtc - switchWallUtc.Value;
+                required = TimeSpan.FromSeconds(currentOffset - e.TotalSeconds);
+                basis = $"实测误差 e={e.TotalSeconds:F3}s（铃−切换）→ 本次所需偏移 {required.TotalSeconds:F3}s";
+            }
+            else
+            {
+                // 退化：未观测到切换 → 绝对口径。注意 delta_abs = (B_display − 偏移) − 铃响 是**相对当前开关的残差**，
+                // 必须加回当前偏移才是「所需绝对偏移」（B_display − 铃响）；漏加会整整偏一个当前偏移，
+                // 实机 4 条实例（2026-09-16 18:50 / 09-17 17:10 / 09-17 18:50 / 09-20 18:50）偏差恰为 4.22 / 6.68 / 7.51 / 1.37 s。
+                required = CorrectionPolicy.RequiredFromAbsolute(deltaAbs, currentOffset);
+                basis = $"未观测到切换，按绝对口径（残差 {deltaAbs.TotalSeconds:F3}s + 当前偏移 {currentOffset:F3}s）" +
+                        $" → 本次所需偏移 {required.TotalSeconds:F3}s";
+            }
+
+            requiredSeconds = required.TotalSeconds;
+
+            // 偏移估计（v0.11.0）：写「近期样本中位数」；趋势外推仅在门槛满足时启用（见 DriftFitter 类注释）
+            _fitter.Add(tRingUtc.ToLocalTime(), required);
+
+            var predictedSeconds = _fitter.PredictSeconds(DateTime.Now) ?? required.TotalSeconds;
+            var target = TimeSpan.FromSeconds(predictedSeconds);
+            var diff = target - TimeSpan.FromSeconds(currentOffset);
+            var shouldApply = _policy.ShouldApply(diff);
+
+            // v1.0.4：一行短摘要（原先把 basis 全文 + 中位数说明 + 死区说明串成一行 250+ 字）。
+            // basis 里的推导（实测误差 e / 退化口径）只在「写入」或「拒写」时才有价值，见下面两条 WARN/INFO。
+            Logger.Info(
+                $"[校时] 拟合 所需{required.TotalSeconds:F3} 当前{currentOffset:F3} 预测{target.TotalSeconds:F3}" +
+                $" 差{diff.TotalSeconds:+0.000;-0.000;0.000} 样本{_fitter.SampleCount}/离散{_fitter.MaxDeviationSeconds:F3}" +
+                $" → {(shouldApply ? "写入" : "带内不写")}");
+
+            if (!shouldApply)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = $"{_policy.LastNote}；样本 {_fitter.SampleCount} 个";
+                // 这次是**干净测量**，只是预测值与当时偏移的差落在死区内（"已经够准所以不写"）
+                sampleReason = SampleReason.DeadZone;
+                return;
+            }
+
+            // 大误差复核（v0.10.2 拒写；v1.0.4 追加人工复核提醒）：即便来源可信，
+            // 一次要改 3 s 以上也值得人工看一眼再动手。
+            // 用户要求「遇到较大误差时坚决不用脏值」——这里拒绝写入并把原因写进历史与日志，
+            // 同时弹出提醒：只写日志意味着用户完全不知情（2026-09-17 17:10 曾静默拦下一次 5.764 s 的改动）。
+            var limitSeconds = config.LargeErrorLimitSeconds > 0
+                ? config.LargeErrorLimitSeconds
+                : DefaultLargeErrorLimitSeconds;
+            var changeSeconds = Math.Abs(diff.TotalSeconds);
+            if (changeSeconds > limitSeconds)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = $"large-error（需改 {diff.TotalSeconds:F3}s ＞ ±{limitSeconds:F1}s，已拒写）";
+                sampleReason = SampleReason.LargeError;
+                Logger.Warn(
+                    $"[校时] 大误差复核：本次要把偏移从 {currentOffset:F3}s 改到 {target.TotalSeconds:F3}s" +
+                    $"（差 {diff.TotalSeconds:F3}s，超过 ±{limitSeconds:F1}s），**拒绝写入**。" +
+                    "常见原因：校铃钟被人工大规模校准、系统时钟跳变、或信号源切换。请人工确认后再决定是否放行。");
+
+                _reviewNotifier?.NotifyLargeError(new BellReviewNotifyArgs
+                {
+                    BoundaryKind = boundaryKind,
+                    BoundaryDisplay = boundaryDisplay,
+                    ChangeSeconds = diff.TotalSeconds,
+                    CurrentOffsetSeconds = currentOffset,
+                    RequiredOffsetSeconds = target.TotalSeconds,
+                    LimitSeconds = limitSeconds,
+                    NotificationEnabled = config.EnableReviewNotification,
+                    Basis = basis
+                });
+                return;
+            }
+
+            rec.Gate = "applied";
+            rec.GateNote = $"{_policy.LastNote}；{_fitter.LastNote}";
+            sampleReason = SampleReason.Applied;
+            _active.Apply(target);
+        }
+        catch (Exception ex)
+        {
+            rec.Gate = "skipped";
+            rec.GateNote = "exception";
+            Logger.Error($"[校时] 应用管线异常：{ex}");
+        }
+    }
+
+    /// <summary>
+    /// 落一条**旁证样本**（v1.0.5）：判据没拿到「开关窗口」的测量，只拿到课表窗口的坐标
+    /// （只课表命中），或一次双窗口冲突的记录。这类样本默认不参与拟合，只出现在设置页
+    /// 「样本管理」里供人工复核 —— 2026-10-07 晚间正是这类窗口被彻底静默（既不写偏移、也不留样本行），
+    /// 使用者只看到「人工校准之后样本全废了」。
+    ///
+    /// 坐标口径与普通样本完全一致（所需偏移 = 标称边界 − 课表窗口测得的铃响起响点），
+    /// 所以人工确认可信后勾上，它就能像普通样本一样参与手动拟合。
+    ///
+    /// <paramref name="scheduleCenterLocal"/> 必须传**课表窗口中心**（= 标称边界的真实墙钟,
+    /// 见调用点上方 <c>scheduleCenterLocal</c> 的推导），不能拿 <c>window.BWallLocal</c> 当锚：
+    /// 后者是内核切换位置 = B_display − 偏移，而 <paramref name="hit"/> 是在以标称边界为中心的
+    /// 窗口里测到的 —— 2026-10-08 三行旁证样本正是因此**每条都少了一个当时的偏移（7.05 s）**
+    /// （落盘 −7.9443/−5.0401/−6.5107，加上 CurrentSec 才是真值 −0.89/+2.01/+0.54）。
+    /// </summary>
+    private static void AppendSideSample(
+        ActiveWindow window, OnsetGate.OnsetHit hit, SampleReason reason, DateTime scheduleCenterLocal)
+    {
+        var tRingLocal = hit.OnsetUtc.ToLocalTime();
+        var required = (scheduleCenterLocal - tRingLocal).TotalSeconds;
+        OffsetSampleStore.Append(
+            tRingLocal, required, window.KernelOffsetSeconds,
+            window.Kind, window.BDisplay.ToString(CalibrationHistory.ClockFormat),
+            applied: false, reason: reason);
+    }
+
+    /// <summary>线性 RMS → dBFS（仅用于日志与提醒文案）。</summary>
+    private static double ToDb(double linear) => 20 * Math.Log10(Math.Max(linear, 1e-12));
+
+    /// <summary>
+    /// 一次闸门命中的短摘要（v1.0.4 日志瘦身）：`开+0.16s 10.5× -19.5dB（候401/合84/强34）`。
+    /// 位置是相对该窗口中心的秒数；未命中显示为 `开无`。完整判据仍在 <see cref="OnsetGate.OnsetHit.Note"/>。
+    /// </summary>
+    private static string ShortHit(string label, OnsetGate.OnsetHit? hit, DateTime centerLocal)
+    {
+        if (hit == null)
+            return $"{label}无";
+
+        var h = hit.Value;
+        var offset = (h.OnsetUtc.ToLocalTime() - centerLocal).TotalSeconds;
+        return $"{label}{offset:+0.00;-0.00;0.00}s {h.Ratio:F1}× {ToDb(h.PeakRms):F1}dB" +
+               $"（候{h.CandidateCount}/合{h.QualifiedCount}/强{h.StrongCount}）";
+    }
+
+    /// <summary>双窗口复核结论的短标记（v1.0.4）：日志里只写结论，理由见冲突时的 WARN。</summary>
+    private static string ShortVerdict(OnsetGate.WindowVerdict verdict) => verdict switch
+    {
+        OnsetGate.WindowVerdict.None => "两窗均未命中",
+        OnsetGate.WindowVerdict.SwitchOnly => "仅开关→开关",
+        OnsetGate.WindowVerdict.ScheduleOnly => "仅课表→旁证",
+        OnsetGate.WindowVerdict.Agree => "两窗一致→开关",
+        OnsetGate.WindowVerdict.PreferSwitch => "开关更强→开关",
+        OnsetGate.WindowVerdict.PreferSchedule => "课表更强→课表",
+        _ => "冲突→不写"
+    };
+
+    /// <summary>
+    /// 调试音频转存：把本窗口音频写成 WAV（&lt;插件配置目录&gt;\Dumps\）；仅在配置开启时调用。
+    /// </summary>
+    private static void DumpWindowAudio(CaptureAudio audio, ActiveWindow window)
+    {
+        try
+        {
+            var folder = Logger.ConfigFolder;
+            if (string.IsNullOrEmpty(folder))
+                return;
+
+            var name = $"{window.StartWallUtc.ToLocalTime():yyyyMMdd-HHmmss}-{window.Kind}-B{window.BDisplay:HHmmss}.wav";
+            var path = System.IO.Path.Combine(folder, "Dumps", name);
+            if (audio.SaveWav(path, out var note))
+            {
+                // v1.0.4：把音频锚点单独写清楚。文件名里的起点是**布防时刻**，而闸门判据用的是
+                // 音频回调首个 block 的时刻（AnchorWallLocal）；两者通常只差几十毫秒，但一旦不同，
+                // 离线拿文件内位置去对闸门的位置就会整体错位（本次排查为此反复得出相反结论）。
+                var anchorLocal = audio.AnchorWallLocal;
+                var anchorNote = anchorLocal == DateTime.MinValue
+                    ? "锚点n/a"
+                    : $"锚点{(anchorLocal - window.StartWallUtc.ToLocalTime()).TotalSeconds:+0.000;-0.000;0.000}s";
+                // v1.0.4：只留文件名（Dumps 目录固定，插件配置目录在启动日志里已给出），一行从 200 字降到 ~60 字。
+                Logger.Info($"[校时] 转存 {Path.GetFileName(path)} {note} {anchorNote}");
+            }
+            else
+            {
+                Logger.Warn($"[校时] 调试音频转存失败：{note}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 调试音频转存异常：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 构造结构化历史记录骨架：协议版本、写入时刻、边界信息、窗口开启墙钟与配置快照。
+    /// Outcome/EndedBy 等结局字段由各终结路径补填。
+    /// </summary>
+    /// <param name="kind">边界类型（中文）。</param>
+    /// <param name="bDisplayClock">B_display 钟面时刻（"HH:mm:ss.fff"；可为 null）。</param>
+    /// <param name="startWallUtc">窗口开启墙钟（UTC；可为 null，如防重入跳过时无窗口）。</param>
+    /// <param name="config">配置快照来源。</param>
+    private static CalibrationHistoryRecord NewRecord(
+        string kind,
+        string? bDisplayClock,
+        DateTime? startWallUtc,
+        BellCalibrationSettings config)
+    {
+        return new CalibrationHistoryRecord
+        {
+            Ts = DateTime.Now.ToString(CalibrationHistory.LocalFormat),
+            Kind = kind,
+            BDisplay = bDisplayClock,
+            StartWall = startWallUtc?.ToLocalTime().ToString(CalibrationHistory.LocalFormat) ?? "",
+            LeadSec = config.ArmedLeadSeconds,
+            WindowSec = config.WindowSeconds,
+            ToleranceSec = config.ToleranceSeconds,
+            Sensitivity = config.DetectionSensitivity,
+            DeadZoneSec = config.DeadZoneSeconds,
+            Learn = config.IsLearningMode,
+            AutoApply = config.IsAutoApplyEnabled,
+            ConfigEnabled = config.IsEnabled
+        };
+    }
+
+    /// <summary>
+    /// 捕获轮询条件（约每 200ms 由捕获线程调用）：
+    /// 窗口已关闭 → 停止；边界未到达 → 继续；边界到达后继续监听 Config.WindowSeconds 秒。
+    /// </summary>
+    private bool ShouldContinue()
+    {
+        lock (_sync)
+        {
+            var w = _window;
+            if (w == null)
+                return false;
+            if (w.ReachedWallUtc == null)
+                return true;
+            return (DateTime.UtcNow - w.ReachedWallUtc.Value).TotalSeconds
+                   < BellTimeCalibrationPlugin.Config.WindowSeconds;
+        }
+    }
+}

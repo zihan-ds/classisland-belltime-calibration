@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    离线工具（不参与插件打包，也不引用 ClassIsland）：
+      模板提取：从长录音样本里按区间（或自动取最响持续段）截出模板 WAV
+      自测：用生产代码（WavReader/BellTemplate/TemplateMatcher 链接编译）验证匹配分离度
+    用法见 tools/README.md。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>TemplateTool</AssemblyName>
+    <RootNamespace>BellTimeCalibration.Tools</RootNamespace>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 直接链接生产代码，保证自测与运行时是同一套算法实现 -->
+    <Compile Include="../../Services/WavReader.cs" />
+    <Compile Include="../../Services/BellTemplate.cs" />
+    <Compile Include="../../Services/TemplateMatcher.cs" />
+  </ItemGroup>
+
+</Project>

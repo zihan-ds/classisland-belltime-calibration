@@ -1,0 +1,26 @@
+# 构建产物
+bin/
+obj/
+*.user
+*.suo
+
+# 调试转存与运行日志（含音频，且可能含环境声音，不入库）
+Dumps/
+Logs/
+*.jsonl
+*.log
+
+# 发布快照与本机配置（含本机路径）
+deploy-snapshot/
+
+# 录音与收割产物：本仓库不分发任何录音。
+# 注意用「/」锚定到仓库根，避免误伤 plugin/Templates/ 下同名的占位模板。
+/上课铃声样本*.wav
+/下课铃声样本*.wav
+/samples/
+/bell-recordings/
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
