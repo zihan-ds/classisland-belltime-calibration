@@ -40,6 +40,9 @@ public class CalibrationRunner : IDisposable
     /// <summary>当前进行中的监听窗口；null = 空闲（上一窗口未结束时新窗口直接跳过）。</summary>
     private ActiveWindow? _window;
 
+    /// <summary>当天历史样本是否已恢复（v1.0.1；只恢复一次，避免每个窗口重复计入）。</summary>
+    private bool _samplesRestored;
+
     /// <summary>
     /// 构造执行器并订阅调度器事件。宿主应用启动完成后由 Plugin 创建一次并持有，防止被 GC。
     /// </summary>
@@ -110,6 +113,37 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
+    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.1）。
+    /// 目的：进程重启不再清空当天的样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
+    /// 期间偏移会有 1~2 次无谓的小跳（2026-09-15 10:05 重启实测即如此）。
+    /// 只恢复当天：跨天的基准可能已被人为校准改变，混入会污染中位数。
+    /// 失败只记日志，不影响校准主链路。
+    /// </summary>
+    private void RestoreTodaySamplesOnce()
+    {
+        if (_samplesRestored)
+            return;
+        _samplesRestored = true;
+
+        try
+        {
+            var today = OffsetSampleStore.LoadToday(DateTime.Now, out var note);
+            if (today.Count == 0)
+            {
+                Logger.Info($"[校时] 偏移样本恢复：{note}");
+                return;
+            }
+
+            var seeded = _fitter.Seed(today);
+            Logger.Info($"[校时] 偏移样本恢复：{note}，已导入 {seeded} 个；{_fitter.LastNote}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 偏移样本恢复失败（不影响校准）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 边界逼近（调度器 tick 线程）：门控通过且无窗口在进行时，记录窗口信息并
     /// 异步启动一次麦克风捕获。捕获结束后在后台线程完成结果处理。
     /// </summary>
@@ -120,6 +154,8 @@ public class CalibrationRunner : IDisposable
             var config = BellTimeCalibrationPlugin.Config;
             if (!config.IsEnabled || !(config.IsLearningMode || config.IsAutoApplyEnabled))
                 return;
+
+            RestoreTodaySamplesOnce();
 
             lock (_sync)
             {
@@ -449,7 +485,17 @@ public class CalibrationRunner : IDisposable
             // v0.6.1+：把「实测切换墙钟」与「实测铃响起响点」一并交给应用管线，用真实误差 e = t_ring − t_switch 做判据。
             // v0.10.2：走到这里的测量**必然来自起响沿闸门或模板匹配**（都带独立真伪判据），
             // 启发式兜底已移除，因此应用管线不再需要「来源可信度」参数。
-            TryApplyCalibration(delta, tRingUtc, reachedUtc, config, rec);
+            TryApplyCalibration(delta, tRingUtc, reachedUtc, config, rec, out var sampleRequired, out var sampleCurrent);
+
+            // v1.0.1：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
+            // 并留下可直接画走势的离线分析数据。只有走到应用管线的可信测量才落盘。
+            if (sampleRequired != null || sampleCurrent != null)
+            {
+                OffsetSampleStore.Append(
+                    tRingLocal, sampleRequired ?? delta.TotalSeconds, sampleCurrent ?? 0,
+                    window.Kind, window.BDisplay.ToString(CalibrationHistory.ClockFormat),
+                    applied: rec.Gate == "applied");
+            }
 
             CalibrationHistory.Append(rec);
             appended = true;
@@ -505,13 +551,19 @@ public class CalibrationRunner : IDisposable
     /// v0.10.2：走到这里的测量必然来自起响沿闸门或模板匹配（启发式兜底已移除），
     /// 故不再需要「来源可信度」参数；另加 <see cref="LargeErrorLimitSeconds"/> 复核。
     /// </summary>
+    /// <param name="requiredSeconds">输出：本次测得的「所需绝对偏移」（秒）；因学习模式/未启用自动应用/不可信来源而未走到该步时为 null。</param>
+    /// <param name="currentOffsetSeconds">输出：本次测量时的当前偏移（秒）；未读取到时为 null。</param>
     private void TryApplyCalibration(
         TimeSpan deltaAbs,
         DateTime tRingUtc,
         DateTime? switchWallUtc,
         BellCalibrationSettings config,
-        CalibrationHistoryRecord rec)
+        CalibrationHistoryRecord rec,
+        out double? requiredSeconds,
+        out double? currentOffsetSeconds)
     {
+        requiredSeconds = null;
+        currentOffsetSeconds = null;
         try
         {
             if (config.IsLearningMode)
@@ -545,6 +597,7 @@ public class CalibrationRunner : IDisposable
             _policy.DeadZoneSeconds = config.DeadZoneSeconds;
 
             var currentOffset = _active.CurrentOffsetSeconds ?? 0;
+            currentOffsetSeconds = currentOffset;
 
             // 本次「让误差归零所需的绝对偏移」：实测误差 e 直接给出 —— 所需偏移 = 当前偏移 − e
             TimeSpan required;
@@ -564,8 +617,11 @@ public class CalibrationRunner : IDisposable
                 basis = $"未观测到切换，按绝对口径 → 本次所需偏移 {required.TotalSeconds:F3}s";
             }
 
+            requiredSeconds = required.TotalSeconds;
+
             // 偏移估计（v0.11.0）：写「近期样本中位数」；趋势外推仅在门槛满足时启用（见 DriftFitter 类注释）
             _fitter.Add(tRingUtc.ToLocalTime(), required);
+
             var predictedSeconds = _fitter.PredictSeconds(DateTime.Now) ?? required.TotalSeconds;
             var target = TimeSpan.FromSeconds(predictedSeconds);
             var diff = target - TimeSpan.FromSeconds(currentOffset);

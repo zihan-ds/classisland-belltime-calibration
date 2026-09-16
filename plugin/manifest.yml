@@ -3,7 +3,7 @@ name: 铃声自动校时
 apiVersion: 2.0.0.0
 description: 监听校园铃声自动校准 ClassIsland 时间偏移的插件。学习模式默认开启：仅记录识别结果，不自动应用校准偏移。
 entranceAssembly: "BellTimeCalibration.dll"
-version: 1.0.0.0
+version: 1.0.1.0
 
 
 

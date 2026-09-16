@@ -7,7 +7,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.0** |
+| 版本 | **1.0.1** |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 状态 | 学习模式默认开启；实机多日连续运行验证 |
 
@@ -114,6 +114,7 @@ ClassIsland 数据目录的 `Plugins\belltime.calibration\`（安装版默认在
 - 插件日志：`<插件配置目录>\Logs\belltimecalibration-<日期>.log`（安装版默认 `data\Config\Plugins\belltime.calibration\Logs\`）。
 - **校准历史（结构化）**：`<插件配置目录>\Logs\calibration-history.jsonl`——每个监听窗口终结时追加一行 JSON（协议 v1），含配置快照、布防/越界墙钟时刻、捕获结局（`skipped-busy`/`init-failed`/`silent-window`/`no-burst`/`no-trusted-match`/`no-ring`/`detected`/`error`；`silent-window`=整窗静默被作废、`no-trusted-match`=闸门与模板均未命中）、全部原始突发候选（含开麦静置伪影，便于复核）、噪声底/峰值 dB、delta/shift 与门控结果。供后续离线调参分析（灵敏度/容差/布防提前量/窗口/死区）。
 - 启动时应依次看到：初始化 → 调度器已启动 → `应用设置·时间偏移 可用：已解析到设置项 Settings.TimeOffsetSeconds…` + `应用通道选定：应用设置·时间偏移`（唯一通道；原版内核即可用）→ 执行器就绪；解析失败则见 `[WARN] 应用设置·时间偏移 不可用…`（此时自动应用停用，仅学习模式记录）。
+- **偏移样本序列**：`<插件配置目录>\Logs\offset-samples.jsonl`——每个**可信测量**追加一行（`Ts` / `RequiredSec` / `CurrentSec` / `Kind` / `B` / `Applied`），记录参与偏移估计的样本。两个用途：① 进程重启后只载入**当天**样本喂给估计器，避免重启后前几个边界退回「单次测量直接写入」（日志：`偏移样本恢复：载入当天样本 N 个（跳过其它日期 M 个）`）；② 离线画偏移走势、复算估计策略（`ReplayTool fitter <样本序列文件>`）。
 - 每次有效铃后会看到一行 `拟合判定：… 预测当前所需偏移 … 与当前差 …`，即「测量 → 拟合 → 写入」的完整判定过程。
 - 若某边界日志为「在忽略列表内，本次不监听、不校准」，即命中 `IgnoredBoundaries`（默认 08:00 / 18:30）。
 - 若某边界日志为「无突发能量」，多为窗口期内没有实际铃响或麦克风权限问题，属正常作废。

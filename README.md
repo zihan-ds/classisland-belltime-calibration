@@ -8,7 +8,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.0** |
+| 版本 | **1.0.1** |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 平台 | Windows（miniaudio/WASAPI，需要可用的默认输入设备） |
 | 作者 | zihan_ds（GitHub：[@zihan-ds](https://github.com/zihan-ds)） |
@@ -88,6 +88,7 @@ plugin/                       插件源码（.NET 8）
 │  ├─ RingDetector.cs         突发起响点检测
 │  ├─ TemplateMatcher.cs      模板匹配（粗定位→精定位→音色→攻击沿）
 │  ├─ DriftFitter.cs          偏移估计（中位数 + 受门槛约束的趋势）
+│  ├─ OffsetSampleStore.cs    偏移样本按天落盘（重启恢复当天序列，供离线分析）
 │  ├─ CorrectionPolicy.cs     死区门控
 │  ├─ SettingsOffsetApplier.cs 写「应用设置·时间偏移」（原版内核可用）
 │  └─ ...
@@ -172,7 +173,32 @@ dotnet build plugin/tools/ReplayTool/ReplayTool.csproj -c Release
 
 - `<插件配置目录>/Logs/belltimecalibration-<日期>.log`（人类可读）
 - `<插件配置目录>/Logs/calibration-history.jsonl`（结构化，每窗口一行，含结局、起响点、误差、门控结果）
+- `<插件配置目录>/Logs/offset-samples.jsonl`（**偏移样本序列**，见下）
 - `DebugDumpAudio=true` 时窗口音频转存到 `<插件配置目录>/Dumps/`（**默认关闭**，音频平时只在内存）
+
+### 偏移样本序列（`offset-samples.jsonl`）
+
+每个拿到**可信测量**的监听窗口追加一行，记录参与偏移估计的样本：
+
+```json
+{"Ts":"2026-09-15 08:10:21.683","RequiredSec":-1.6850,"CurrentSec":-1.3440,"Kind":"上课","B":"08:10:00.001","Applied":true}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `Ts` | 样本时刻（本地墙钟，取铃响起响点） |
+| `RequiredSec` | 本次测得的「让误差归零所需绝对偏移」（秒） |
+| `CurrentSec` | 测量时的当前偏移（秒）——`RequiredSec` 与它的差就是本次实际改动量 |
+| `Kind` / `B` | 边界类型（上课/下课）与课表显示时刻 |
+| `Applied` | 本次是否真的写入了偏移（带内不写、大误差拒写时为 `false`） |
+
+用途有两个：
+
+1. **重启恢复**：插件启动后首次布防时会**只载入当天**的样本喂给估计器，
+   避免进程重启后前几个边界退回「单次测量直接写入」；跨天样本不载入（基准可能已被人为校准改变）。
+   日志会写明 `偏移样本恢复：载入当天样本 N 个（跳过其它日期 M 个）`。
+2. **离线分析**：可直接画偏移随时间的变化（`Ts` vs `RequiredSec`），
+   或用 `ReplayTool fitter <样本序列文件>` 离线复算不同估计策略的稳定性。
 
 ---
 

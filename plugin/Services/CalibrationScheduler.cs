@@ -153,24 +153,30 @@ public class CalibrationScheduler : IDisposable
             {
                 case TimeState.OnClass:
                     // 上课中 → 下一次边界是下课（最后一节下课即放学铃，同样适用）
-                    remaining = _lessonsService.OnBreakingTimeLeftTime;
                     boundaryKind = "下课";
 
-                    // v0.10.3 修复：**当天最后一节课**时内核给不出下课倒计时，必须回退。
-                    // 内核算法（LessonsService.cs）：nextBreakingTimeLayoutItem = 课表里第一个
-                    // 「TimeType==1（下课）且 EndTime >= now」的条目；若当天之后再无下课条目（放学即最后一个时间点），
-                    // 该值为 null → OnBreakingTimeLeftTime 恒为 0（被 AtLeastZero 夹住）。
-                    // 于是旧实现在 remaining<=0 时清除布防并返回，**放学校铃永远不会布防**
-                    // （2026-09-13 22:30 边界实测：宿主 22:30:04 正常发出放学事件，而插件整段无日志、未开麦）。
-                    // 回退口径：上课状态下的 OnClassLeftTime 就是「本节课剩余」，末节课即到放学的剩余时间。
-                    // 仅在本节确实有结束时刻（>0，排除时间点缺失的 00:00 占位）时采用，
-                    // 以免把 OnClassLeftTime 默认的零值误当成边界。
-                    if (remaining <= TimeSpan.Zero && _lessonsService.CurrentTimeLayoutItem.EndTime > TimeSpan.Zero)
+                    // 下课候选一：内核的下课倒计时（课表里「Type=1 且 结束时刻 ≥ now」的最近条目起点）。
+                    // 注意它的语义是「下一次**课间**的开始」，**不是**「本节课的结束」。
+                    var nextBreak = _lessonsService.OnBreakingTimeLeftTime;
+
+                    // 下课候选二：**当前课表项的结束时刻**。这是「本节课何时结束」的直接来源，
+                    // 也正是放学边界唯一可用的依据——当天最后一节之后再无课间条目，
+                    // 内核的 nextBreakingTimeLayoutItem 为 null，候选一恒为 0
+                    // （LessonsService.cs:479 `FirstOrDefault(Type==1 && EndTime >= now)`）。
+                    // 两个候选都取，选择**更近的那个**：这样放学边界能布防，且当内核倒计时正常时行为不变。
+                    // EndTime 为 00:00 表示该时间点没有结束时刻（占位），此时不参与。
+                    var currentItem = _lessonsService.CurrentTimeLayoutItem;
+                    var hasClassEnd = currentItem.EndTime > TimeSpan.Zero;
+
+                    remaining = nextBreak;
+                    if (hasClassEnd)
                     {
-                        var classLeft = _lessonsService.OnClassLeftTime;
-                        if (classLeft > TimeSpan.Zero)
+                        var nowForEnd = _exactTimeService.GetCurrentLocalDateTime();
+                        var classEndRemaining = currentItem.EndTime - nowForEnd.TimeOfDay;
+                        if (classEndRemaining > TimeSpan.Zero &&
+                            (remaining <= TimeSpan.Zero || classEndRemaining < remaining))
                         {
-                            remaining = classLeft;
+                            remaining = classEndRemaining;
                         }
                     }
 

@@ -59,7 +59,43 @@ public sealed class DriftFitter
     /// <summary>趋势启用时的最大外推时长（小时）：预测点距最后一个样本不超过该值。</summary>
     public const double MaxExtrapolationHours = 2.0;
 
+    /// <summary>批次导入时的默认时间间隔（秒）：历史文件只存时刻与所需偏移，
+    /// 导入时按此间隔递增，避免「同一时刻多个样本」把时间跨度算成 0（仅影响趋势门槛判定）。</summary>
+    private const double ImportedSampleSpacingSeconds = 1.0;
+
     private readonly List<(DateTime At, double OffsetSec)> _samples = new();
+
+    /// <summary>
+    /// 用历史样本预置拟合器（v1.0.1，供进程重启后恢复**当天**序列）。
+    /// 与逐条 <see cref="Add"/> 的区别：**不做跳变检测**——历史样本本就同属一个基准，
+    /// 逐条跑跳变判定会把正常的时间漂移误判成「人工校准」而清空序列。
+    /// </summary>
+    /// <param name="history">历史样本（按时间升序）。</param>
+    /// <returns>实际导入的样本数。</returns>
+    public int Seed(IEnumerable<(DateTime At, double RequiredSec)> history)
+    {
+        var count = 0;
+        var lastAt = DateTime.MinValue;
+        foreach (var (at, required) in history)
+        {
+            var effective = at <= lastAt ? lastAt.AddSeconds(ImportedSampleSpacingSeconds) : at;
+            lastAt = effective;
+
+            _samples.Add((effective, required));
+            if (_samples.Count > MaxSamples)
+                _samples.RemoveAt(0);
+            count++;
+        }
+
+        if (count > 0)
+        {
+            var noteBefore = LastNote;
+            Recompute();
+            LastNote = $"已从当天历史恢复 {count} 个样本；{LastNote ?? noteBefore}";
+        }
+
+        return count;
+    }
 
     /// <summary>当前参与估计的样本数。</summary>
     public int SampleCount => _samples.Count;

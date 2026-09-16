@@ -39,6 +39,9 @@ public class BellTimeCalibrationPlugin : PluginBase
         // 0.1 初始化结构化校准历史（与人类日志同目录，JSONL；供离线调参分析）
         CalibrationHistory.Initialize(PluginConfigFolder);
 
+        // 0.2 初始化偏移样本存储（v1.0.1）：样本按天落盘，进程重启后恢复当天序列
+        OffsetSampleStore.Initialize(PluginConfigFolder);
+
         Logger.Info("BellTimeCalibration 插件初始化完成");
 
         // 1. 加载配置：文件不存在则使用默认值并落盘一次；随后任何属性变更自动保存
@@ -91,7 +94,7 @@ public class BellTimeCalibrationPlugin : PluginBase
             // （IProfileService 不再被插件解析/使用。）
             var offsetApplier = new SettingsOffsetApplier(exactTimeService);
             _runner = new CalibrationRunner(_scheduler, offsetApplier);
-            Logger.Info("[校时] 校准执行器已就绪（v1.0：起响沿闸门 + 中位数估计（音频样本由用户提供），原版内核可用，不改课表）。");
+            Logger.Info("[校时] 校准执行器已就绪（v1.0.1：起响沿闸门 + 中位数估计（音频样本由用户提供），原版内核可用，不改课表）。");
         }
         catch (Exception ex)
         {
