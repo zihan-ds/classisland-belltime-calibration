@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\Services\WavReader.cs" />
+    <Compile Include="..\..\Services\Logger.cs" />
     <Compile Include="..\..\Services\BellTemplate.cs" />
     <Compile Include="..\..\Services\TemplateMatcher.cs" />
     <Compile Include="..\..\Services\CaptureAudio.cs" />
@@ -20,6 +21,13 @@
     <Compile Include="..\..\Services\RingCandidateSelector.cs" />
     <Compile Include="..\..\Services\OnsetGate.cs" />
     <Compile Include="..\..\Services\DriftFitter.cs" />
+    <!-- 复核提醒的判定是纯函数（只用基元类型），可脱离宿主离线断言（notify-test 子命令）。
+         注意只链接 BellReviewDecision.cs（无宿主依赖）；BellReviewNotifier.cs 引用 ClassIsland 类型，
+         离线工具不能链接它。
+         手动拟合同理：ManualFitService.cs + OffsetSampleStore.cs 均不引用宿主类型（manual-fit 子命令）。 -->
+    <Compile Include="..\..\Services\BellReviewDecision.cs" />
+    <Compile Include="..\..\Services\OffsetSampleStore.cs" />
+    <Compile Include="..\..\Services\ManualFitService.cs" />
   </ItemGroup>
 
 </Project>

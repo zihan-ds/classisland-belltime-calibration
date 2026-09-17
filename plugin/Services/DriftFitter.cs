@@ -28,7 +28,10 @@ namespace BellTimeCalibration.Services;
 /// 三项同时成立时启用；斜率仍钳制在 ±<see cref="MaxSlopeSecondsPerHour"/>。
 /// 门槛的含义：只有噪声被平均到足以看出真实走时（残差 &lt;0.3 s）之后，才允许追趋势。</description></item>
 /// </list>
-/// 不做线程同步：调用方（CalibrationRunner）串行使用（同一时刻仅一个监听窗口）。
+/// 不做线程同步的说明已作废（v1.0.2）：手动拟合（设置页按钮）会在 UI 线程上
+/// <see cref="Seed"/> 一份新序列，而捕获线程可能正在 <see cref="Add"/>，
+/// 因此所有公开成员与 <see cref="Recompute"/> 都由 <see cref="_sync"/> 串行化 ——
+/// 「边采集边点按钮」绝不允许读出半更新的中间态。
 /// </summary>
 public sealed class DriftFitter
 {
@@ -66,7 +69,13 @@ public sealed class DriftFitter
     private readonly List<(DateTime At, double OffsetSec)> _samples = new();
 
     /// <summary>
-    /// 用历史样本预置拟合器（v1.0.1，供进程重启后恢复**当天**序列）。
+    /// 串行化所有样本读写（v1.0.2）：手动拟合走 UI 线程，校准走捕获线程，
+    /// 两者可能同时碰到这份序列。锁只保护本类内部状态，不跨类调用，不会造成死锁。
+    /// </summary>
+    private readonly object _sync = new();
+
+    /// <summary>
+    /// 用历史样本预置拟合器（v1.0.2，供进程重启后恢复**当天**序列）。
     /// 与逐条 <see cref="Add"/> 的区别：**不做跳变检测**——历史样本本就同属一个基准，
     /// 逐条跑跳变判定会把正常的时间漂移误判成「人工校准」而清空序列。
     /// </summary>
@@ -74,49 +83,86 @@ public sealed class DriftFitter
     /// <returns>实际导入的样本数。</returns>
     public int Seed(IEnumerable<(DateTime At, double RequiredSec)> history)
     {
-        var count = 0;
-        var lastAt = DateTime.MinValue;
-        foreach (var (at, required) in history)
+        lock (_sync)
         {
-            var effective = at <= lastAt ? lastAt.AddSeconds(ImportedSampleSpacingSeconds) : at;
-            lastAt = effective;
+            var count = 0;
+            var lastAt = DateTime.MinValue;
+            foreach (var (at, required) in history)
+            {
+                var effective = at <= lastAt ? lastAt.AddSeconds(ImportedSampleSpacingSeconds) : at;
+                lastAt = effective;
 
-            _samples.Add((effective, required));
-            if (_samples.Count > MaxSamples)
-                _samples.RemoveAt(0);
-            count++;
+                _samples.Add((effective, required));
+                if (_samples.Count > MaxSamples)
+                    _samples.RemoveAt(0);
+                count++;
+            }
+
+            if (count > 0)
+            {
+                // 锁内直读字段：属性 getter 会再取同一把锁（可重入，但没必要）
+                var noteBefore = _lastNote;
+                Recompute();
+                LastNote = $"已从当天历史恢复 {count} 个样本；{_lastNote ?? noteBefore}";
+            }
+
+            return count;
         }
-
-        if (count > 0)
-        {
-            var noteBefore = LastNote;
-            Recompute();
-            LastNote = $"已从当天历史恢复 {count} 个样本；{LastNote ?? noteBefore}";
-        }
-
-        return count;
     }
 
     /// <summary>当前参与估计的样本数。</summary>
-    public int SampleCount => _samples.Count;
+    public int SampleCount
+    {
+        get { lock (_sync) { return _samples.Count; } }
+    }
 
+    private double? _medianSeconds;
     /// <summary>近期样本的中位数（秒）；无样本为 null。</summary>
-    public double? MedianSeconds { get; private set; }
+    public double? MedianSeconds
+    {
+        get { lock (_sync) { return _medianSeconds; } }
+        private set => _medianSeconds = value;
+    }
 
+    private double? _maxDeviationSeconds;
     /// <summary>近期样本相对中位数的最大偏差（秒）；无样本为 null。用于判断散度。</summary>
-    public double? MaxDeviationSeconds { get; private set; }
+    public double? MaxDeviationSeconds
+    {
+        get { lock (_sync) { return _maxDeviationSeconds; } }
+        private set => _maxDeviationSeconds = value;
+    }
 
+    private bool _trendEnabled;
     /// <summary>趋势是否已启用（样本数、跨度、残差三项门槛同时满足）。</summary>
-    public bool TrendEnabled { get; private set; }
+    public bool TrendEnabled
+    {
+        get { lock (_sync) { return _trendEnabled; } }
+        private set => _trendEnabled = value;
+    }
 
+    private double? _slopeSecondsPerHour;
     /// <summary>拟合出的走时速率（秒/小时）；仅在 <see cref="TrendEnabled"/> 时有意义。</summary>
-    public double? SlopeSecondsPerHour { get; private set; }
+    public double? SlopeSecondsPerHour
+    {
+        get { lock (_sync) { return _slopeSecondsPerHour; } }
+        private set => _slopeSecondsPerHour = value;
+    }
 
+    private string? _lastNote;
     /// <summary>最近一次操作的说明（中文，供日志）。</summary>
-    public string? LastNote { get; private set; }
+    public string? LastNote
+    {
+        get { lock (_sync) { return _lastNote; } }
+        private set => _lastNote = value;
+    }
 
+    private double? _lastResidualSeconds;
     /// <summary>最近一个样本相对当前中位数的残差（秒）；无样本时为 null。</summary>
-    public double? LastResidualSeconds { get; private set; }
+    public double? LastResidualSeconds
+    {
+        get { lock (_sync) { return _lastResidualSeconds; } }
+        private set => _lastResidualSeconds = value;
+    }
 
     /// <summary>
     /// 追加一次测量样本。
@@ -125,24 +171,27 @@ public sealed class DriftFitter
     /// <param name="requiredOffset">让当前误差归零所需的绝对偏移（秒）。</param>
     public void Add(DateTime atLocal, TimeSpan requiredOffset)
     {
-        var sec = requiredOffset.TotalSeconds;
-
-        // 跳变检测：与当前中位数比对（中位数已抗单点噪声，故这里拦的是真实基准跳变）
-        var priorMedian = MedianSeconds;
-        if (priorMedian.HasValue && Math.Abs(sec - priorMedian.Value) > JumpResetSeconds)
+        lock (_sync)
         {
-            _samples.Clear();
-            LastNote = $"样本 {sec:F3}s 与当前中位数 {priorMedian.Value:F3}s 相差 {sec - priorMedian.Value:F3}s" +
-                       $"（＞跳变阈值 {JumpResetSeconds:F1}s）→ 判定人工校准/新基准，重置样本段";
-        }
+            var sec = requiredOffset.TotalSeconds;
 
-        _samples.Add((atLocal, sec));
-        if (_samples.Count > MaxSamples)
-        {
-            _samples.RemoveAt(0);
-        }
+            // 跳变检测：与当前中位数比对（中位数已抗单点噪声，故这里拦的是真实基准跳变）
+            var priorMedian = _medianSeconds;
+            if (priorMedian.HasValue && Math.Abs(sec - priorMedian.Value) > JumpResetSeconds)
+            {
+                _samples.Clear();
+                LastNote = $"样本 {sec:F3}s 与当前中位数 {priorMedian.Value:F3}s 相差 {sec - priorMedian.Value:F3}s" +
+                           $"（＞跳变阈值 {JumpResetSeconds:F1}s）→ 判定人工校准/新基准，重置样本段";
+            }
 
-        Recompute();
+            _samples.Add((atLocal, sec));
+            if (_samples.Count > MaxSamples)
+            {
+                _samples.RemoveAt(0);
+            }
+
+            Recompute();
+        }
     }
 
     /// <summary>
@@ -152,22 +201,25 @@ public sealed class DriftFitter
     /// <param name="atLocal">目标时刻（本地墙钟）。</param>
     public double? PredictSeconds(DateTime atLocal)
     {
-        if (_samples.Count == 0)
-            return null;
+        lock (_sync)
+        {
+            if (_samples.Count == 0)
+                return null;
 
-        if (_samples.Count == 1)
-            return _samples[0].OffsetSec;
+            if (_samples.Count == 1)
+                return _samples[0].OffsetSec;
 
-        if (!TrendEnabled || SlopeSecondsPerHour == null || MedianSeconds == null)
-            return MedianSeconds;
+            if (!_trendEnabled || _slopeSecondsPerHour == null || _medianSeconds == null)
+                return _medianSeconds;
 
-        // 趋势启用：以中位数为基准做温和外推（受外推时长护栏约束）
-        var hours = (atLocal - _samples[^1].At).TotalHours;
-        var cappedHours = Math.Clamp(hours, -MaxExtrapolationHours, MaxExtrapolationHours);
-        return MedianSeconds + SlopeSecondsPerHour.Value * cappedHours;
+            // 趋势启用：以中位数为基准做温和外推（受外推时长护栏约束）
+            var hours = (atLocal - _samples[^1].At).TotalHours;
+            var cappedHours = Math.Clamp(hours, -MaxExtrapolationHours, MaxExtrapolationHours);
+            return _medianSeconds + _slopeSecondsPerHour.Value * cappedHours;
+        }
     }
 
-    /// <summary>重算中位数、散度与（满足门槛时的）趋势。</summary>
+    /// <summary>重算中位数、散度与（满足门槛时的）趋势。调用方必须已持有 <see cref="_sync"/>。</summary>
     private void Recompute()
     {
         // 样本窗口：优先近期，样本太少则放宽到全部
@@ -227,8 +279,8 @@ public sealed class DriftFitter
 
         TrendEnabled = true;
         SlopeSecondsPerHour = Math.Clamp(rawSlope, -MaxSlopeSecondsPerHour, MaxSlopeSecondsPerHour);
-        var clampNote = Math.Abs(rawSlope - SlopeSecondsPerHour.Value) > 1e-9 ? $"（原始斜率 {rawSlope:F2} 已钳制）" : "";
-        LastNote = $"中位数 {median.Value:F3}s + 趋势 {SlopeSecondsPerHour.Value:F3} 秒/小时{clampNote}" +
+        var clampNote = Math.Abs(rawSlope - _slopeSecondsPerHour!.Value) > 1e-9 ? $"（原始斜率 {rawSlope:F2} 已钳制）" : "";
+        LastNote = $"中位数 {median.Value:F3}s + 趋势 {_slopeSecondsPerHour.Value:F3} 秒/小时{clampNote}" +
                    $"（{windowed.Count} 个样本，跨度 {spanHours:F1}h，拟合残差 {maxResidual:F3}s）";
     }
 

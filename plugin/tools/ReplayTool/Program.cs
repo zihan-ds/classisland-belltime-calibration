@@ -22,16 +22,25 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        // 子命令先分派：它们不需要 dump 的三个位置参数
+        if (args.Length > 0 && string.Equals(args[0], "fitter", StringComparison.OrdinalIgnoreCase))
+            return Fitter(args);
+
+        if (args.Length > 0 && string.Equals(args[0], "notify-test", StringComparison.OrdinalIgnoreCase))
+            return NotifyTest();
+
+        if (args.Length > 0 && string.Equals(args[0], "manual-fit", StringComparison.OrdinalIgnoreCase))
+            return ManualFit(args);
+
         if (args.Length < 3)
         {
             Console.WriteLine("用法：");
             Console.WriteLine("  ReplayTool <dump.wav> <模板目录> <边界在dump内秒数> [内核偏移秒=-5.1] [搜索半窗秒=12]");
             Console.WriteLine("  ReplayTool fitter <样本序列文件> [死区秒=0.3]   # 离线验证偏移估计算法（每行：yyyy-MM-dd HH:mm:ss,所需偏移秒）");
+            Console.WriteLine("  ReplayTool notify-test                        # 断言「人工审核提醒」的开关与阈值判定");
+            Console.WriteLine("  ReplayTool manual-fit <offset-samples.jsonl> [yyyy-MM-dd]  # 跑一遍手动拟合（当天有效样本 → 偏移）");
             return 1;
         }
-
-        if (string.Equals(args[0], "fitter", StringComparison.OrdinalIgnoreCase))
-            return Fitter(args);
 
         var dumpPath = args[0];
         var tplDir = args[1];
@@ -158,6 +167,230 @@ public static class Program
         for (var i = from; i < to; i++)
             sum += (double)s[i] * s[i];
         return Math.Sqrt(sum / (to - from));
+    }
+
+    /// <summary>
+    /// 离线断言「大误差人工复核提醒」的判定（<see cref="NotificationReviewDecision"/>）。
+    /// 这是复核提醒唯一的可离线验证部分：判定是纯函数，弹窗本身只能在实机看到。
+    /// 用例覆盖「人工审核提醒」开关语义、阈值边界（严格大于）、绝对值处理，
+    /// 以及「无冷却」这一行为（同一个大误差连续出现必须每次都提醒）。
+    /// 任一条不符即返回非零，可直接用于回归。
+    /// </summary>
+    private static int NotifyTest()
+    {
+        var failed = 0;
+
+        // (说明, 改动量, 阈值, 开关, 期望是否弹)
+        var cases = new (string Name, double Change, double Limit, bool Enabled, bool Expect)[]
+        {
+            ("开关关（改动 3.5s 超阈值）→ 不弹", 3.5, 3.0, false, false),
+            ("开关关（改动 50s 超阈值）→ 不弹", 50, 3.0, false, false),
+            ("开关开，改动 0.8s 未超阈值 3.0s → 不弹", 0.8, 3.0, true, false),
+            ("开关开，改动 3.5s 超过阈值 3.0s → 弹", 3.5, 3.0, true, true),
+            ("开关开，改动 2.0s 恰好等于阈值 2.0s（严格大于语义）→ 不弹", 2.0, 2.0, true, false),
+            ("开关开，改动 -5.8s（实机 2026-09-17 17:10 那次，取绝对值）→ 弹", -5.8, 3.0, true, true),
+            ("开关开，改动 7.5s（实机 18:50 那次 +0.29 与基准 -7.2 的差）→ 弹", 7.5, 3.0, true, true),
+        };
+
+        Console.WriteLine("提醒判定离线断言（无冷却；由「人工审核提醒」开关决定是否弹）：");
+        foreach (var c in cases)
+        {
+            var (shouldNotify, why) = NotificationReviewDecision.Evaluate(c.Change, c.Limit, c.Enabled);
+            var ok = shouldNotify == c.Expect;
+            if (!ok)
+                failed++;
+            Console.WriteLine($"  [{(ok ? "通过" : "失败")}] {c.Name} → 弹={shouldNotify}（期望 {c.Expect}）");
+            Console.WriteLine($"         └ {why}");
+        }
+
+        // 无冷却回归：同一个大误差连续判定多次，必须每次都说「弹」
+        var repeats = 3;
+        for (var i = 0; i < repeats; i++)
+        {
+            var (shouldNotify, _) = NotificationReviewDecision.Evaluate(4.2, 3.0, true);
+            if (!shouldNotify)
+            {
+                failed++;
+                Console.WriteLine($"  [失败] 无冷却回归：第 {i + 1} 次相同大误差应仍然弹提醒");
+            }
+        }
+        if (failed == 0)
+            Console.WriteLine($"  [通过] 无冷却回归：连续 {repeats} 次相同大误差都判为弹提醒");
+
+        Console.WriteLine();
+        if (failed == 0)
+        {
+            Console.WriteLine($"全部 {cases.Length} 条用例 + 无冷却回归通过。");
+            return 0;
+        }
+
+        Console.WriteLine($"有 {failed} 项断言失败。");
+        return 4;
+    }
+
+    /// <summary>
+    /// 离线跑一遍「手动拟合」：读 <c>offset-samples.jsonl</c>（或任何同格式样本文件），
+    /// 用**生产代码**（<see cref="OffsetSampleStore.LoadToday"/> + <see cref="ManualFitService"/>）
+    /// 选出当天有效样本并算出要写入的偏移，打印全过程，并对样本过滤做断言。
+    ///
+    /// 用法：<c>ReplayTool manual-fit &lt;offset-samples.jsonl&gt; [筛选日期 yyyy-MM-dd]</c>（默认今天）
+    /// </summary>
+    private static int ManualFit(string[] args)
+    {
+        if (args.Length < 2 || !File.Exists(args[1]))
+        {
+            Console.WriteLine("找不到样本文件。");
+            return 2;
+        }
+
+        var day = DateTime.Now.Date;
+        if (args.Length > 2 && DateTime.TryParse(args[2], CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+            day = parsed.Date;
+
+        // 复用生产解析：临时把存储指向该文件（LoadToday 只认 Initialize 设的路径）
+        var samples = ReadSamplesFrom(path: args[1], day: day);
+        if (samples == null)
+            return 3;
+
+        Console.WriteLine($"样本文件：{args[1]}");
+        Console.WriteLine($"筛选日期：{day:yyyy-MM-dd}；当天样本 {samples.Count} 个" +
+                          $"（有效 {samples.Count(s => s.Applied)} 个，排除 {samples.Count(s => !s.Applied)} 个）");
+        Console.WriteLine();
+
+        foreach (var s in samples)
+        {
+            Console.WriteLine($"  {(s.Applied ? "[有效]" : "[排除]")} {s.At:HH:mm:ss.fff}  所需偏移 {s.RequiredSec,9:F4}s");
+        }
+        Console.WriteLine();
+
+        var failed = 0;
+
+        // 断言：被排除的都是 Applied=false，且有效样本的 RequiredSec 不含明显离群的脏值
+        var valid = samples.Where(s => s.Applied).ToList();
+        foreach (var s in samples.Where(x => !x.Applied))
+        {
+            if (s.RequiredSec > -5 && valid.Count > 0 && valid.Average(v => v.RequiredSec) < -5)
+            {
+                Console.WriteLine($"  [提示] 已排除疑似脏样本 {s.At:HH:mm:ss}（{s.RequiredSec:F4}s，" +
+                                  $"与有效样本均值 {valid.Average(v => v.RequiredSec):F3}s 相差 " +
+                                  $"{Math.Abs(s.RequiredSec - valid.Average(v => v.RequiredSec)):F3}s）");
+            }
+        }
+
+        var result = ManualFitService.Analyze(samples);
+        if (result == null)
+        {
+            Console.WriteLine("当天没有有效样本 → 手动拟合不会写入任何东西（按钮会提示原因）。");
+            return 0;
+        }
+
+        Console.WriteLine($"拟合结果：写入 {result.OffsetSeconds:F3}s");
+        Console.WriteLine($"  有效样本 {result.ValidCount}/{result.TotalCount}；中位数 {result.MedianSeconds:F3}s；" +
+                          $"最大偏差 {result.MaxDeviationSeconds:F3}s；趋势启用={result.TrendEnabled}");
+        Console.WriteLine($"  {result.Note}");
+        Console.WriteLine();
+        Console.WriteLine($"设置页结果文字：{ManualFitService.Describe(result, previousOffsetSeconds: null)}");
+
+        // 断言：结果必须落在有效样本的取值范围内（中位数/外推不可能越界太多）
+        var min = valid.Min(v => v.RequiredSec);
+        var max = valid.Max(v => v.RequiredSec);
+        var slack = 1.0; // 趋势外推允许略微越界
+        if (result.OffsetSeconds < min - slack || result.OffsetSeconds > max + slack)
+        {
+            failed++;
+            Console.WriteLine($"  [失败] 拟合值 {result.OffsetSeconds:F3}s 越出有效样本范围 [{min:F3}, {max:F3}]±{slack:F1}s");
+        }
+        else
+        {
+            Console.WriteLine($"  [通过] 拟合值落在有效样本范围 [{min:F3}, {max:F3}]±{slack:F1}s 内");
+        }
+
+        // 断言：排除掉脏样本后，结果不应该被脏值拖走（用含脏样本的口径对比）
+        var fitterAll = new DriftFitter();
+        fitterAll.Seed(samples.Select(s => (s.At, s.RequiredSec)));
+        var offsetAll = fitterAll.PredictSeconds(DateTime.Now);
+        Console.WriteLine($"  对照：若把被排除的样本也喂进去，会得到 {offsetAll:F3}s（相差 " +
+                          $"{Math.Abs((offsetAll ?? 0) - result.OffsetSeconds):F3}s）");
+
+        Console.WriteLine();
+        Console.WriteLine(failed == 0 ? "断言全部通过。" : $"有 {failed} 项断言失败。");
+        return failed == 0 ? 0 : 5;
+    }
+
+    /// <summary>
+    /// 解析样本文件里指定日期的样本（复用生产解析逻辑：临时把 <see cref="OffsetSampleStore"/>
+    /// 指向目标文件不可行——它的路径是私有的，因此这里直接读文件后用同一套字段解析规则）。
+    /// </summary>
+    private static List<OffsetSample>? ReadSamplesFrom(string path, DateTime day)
+    {
+        try
+        {
+            var result = new List<OffsetSample>();
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0)
+                    continue;
+
+                var atText = ExtractQuoted(line, "Ts");
+                var required = ExtractNumber(line, "RequiredSec");
+                if (atText == null || required == null)
+                    continue;
+                if (!DateTime.TryParse(atText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var at))
+                    continue;
+                if (at.Date != day)
+                    continue;
+
+                result.Add(new OffsetSample(at, required.Value, ExtractBool(line, "Applied") ?? true));
+            }
+
+            return result.OrderBy(x => x.At).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"读取样本文件失败：{ex.Message}");
+            return null;
+        }
+    }
+
+    private static string? ExtractQuoted(string line, string name)
+    {
+        var key = $"\"{name}\":\"";
+        var i = line.IndexOf(key, StringComparison.Ordinal);
+        if (i < 0)
+            return null;
+        i += key.Length;
+        var j = line.IndexOf('"', i);
+        return j < 0 ? null : line.Substring(i, j - i);
+    }
+
+    private static double? ExtractNumber(string line, string name)
+    {
+        var key = $"\"{name}\":";
+        var i = line.IndexOf(key, StringComparison.Ordinal);
+        if (i < 0)
+            return null;
+        i += key.Length;
+        var j = i;
+        while (j < line.Length && (char.IsDigit(line[j]) || line[j] is '-' or '+' or '.' or 'e' or 'E'))
+            j++;
+        return double.TryParse(line.Substring(i, j - i), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+            ? v
+            : null;
+    }
+
+    private static bool? ExtractBool(string line, string name)
+    {
+        var key = $"\"{name}\":";
+        var i = line.IndexOf(key, StringComparison.Ordinal);
+        if (i < 0)
+            return null;
+        i += key.Length;
+        if (string.CompareOrdinal(line, i, "true", 0, 4) == 0)
+            return true;
+        if (string.CompareOrdinal(line, i, "false", 0, 5) == 0)
+            return false;
+        return null;
     }
 
     /// <summary>

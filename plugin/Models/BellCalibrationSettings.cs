@@ -59,6 +59,32 @@ public class BellCalibrationSettings : INotifyPropertyChanged
         set { _deadZoneSeconds = Math.Max(0, value); OnPropertyChanged(); }
     }
 
+    private double _largeErrorLimitSeconds = 3.0;
+    /// <summary>
+    /// 大误差复核阈值（秒，v1.0.2）：本次要写入的偏移与当前偏移相差超过此值时**拒绝写入，并向用户弹出人工复核提醒**。
+    /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；出现更大的值通常意味着校铃钟被人工大规模校准过、
+    /// 或系统时钟发生跳变 —— 两种情况都值得人工看一眼，而不是让插件静静地把偏移改掉几秒。
+    /// 用户要求：**遇到较大误差时坚决不用脏值**。
+    /// </summary>
+    public double LargeErrorLimitSeconds
+    {
+        get => _largeErrorLimitSeconds;
+        // 上限 120 秒：本判定同时是「是否弹复核提醒」的阈值，给足余量但绝不允许把大误差保护整体关掉
+        set { _largeErrorLimitSeconds = Math.Clamp(value, 1.0, 120.0); OnPropertyChanged(); }
+    }
+
+    private bool _enableReviewNotification = true;
+    /// <summary>
+    /// 人工审核提醒开关（v1.0.2）：关闭后大误差**仍然拒绝写入**，但不再弹出界面提醒（只记日志）。
+    /// 与「是否拒写」无关——拒写是数据安全底线，提醒只是可选的打扰；
+    /// 关掉后每个边界的大误差都只留日志，因此不再需要额外的冷却机制。
+    /// </summary>
+    public bool EnableReviewNotification
+    {
+        get => _enableReviewNotification;
+        set { _enableReviewNotification = value; OnPropertyChanged(); }
+    }
+
     private double _toleranceSeconds = 12;
     /// <summary>铃响搜索半窗（±秒，v0.8.0 起语义）：以课表标称边界为中心搜索铃声起响点的范围，须覆盖校铃钟漂移幅度（可达 ~10s）。</summary>
     public double ToleranceSeconds

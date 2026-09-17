@@ -37,10 +37,13 @@ public class CalibrationRunner : IDisposable
     /// <summary>偏移拟合器（v0.7.0）：多次测量最小二乘拟合广播铃钟的规律性走时偏差。</summary>
     private readonly DriftFitter _fitter = new();
 
+    /// <summary>大误差人工复核提醒（v1.0.2）；宿主未提供提醒能力时为 null，此时只记日志。</summary>
+    private readonly BellReviewNotifier? _reviewNotifier;
+
     /// <summary>当前进行中的监听窗口；null = 空闲（上一窗口未结束时新窗口直接跳过）。</summary>
     private ActiveWindow? _window;
 
-    /// <summary>当天历史样本是否已恢复（v1.0.1；只恢复一次，避免每个窗口重复计入）。</summary>
+    /// <summary>当天历史样本是否已恢复（v1.0.2；只恢复一次，避免每个窗口重复计入）。</summary>
     private bool _samplesRestored;
 
     /// <summary>
@@ -48,10 +51,12 @@ public class CalibrationRunner : IDisposable
     /// </summary>
     /// <param name="scheduler">铃声监听调度器。</param>
     /// <param name="kernelApplier">内核校时应用通道（可为 null；不可用时自动应用停用）。</param>
-    public CalibrationRunner(CalibrationScheduler scheduler, IOffsetApplier? kernelApplier)
+    /// <param name="reviewNotifier">大误差人工复核提醒（可为 null：宿主未提供提醒能力时只记日志，不影响校准）。</param>
+    public CalibrationRunner(CalibrationScheduler scheduler, IOffsetApplier? kernelApplier, BellReviewNotifier? reviewNotifier = null)
     {
         _scheduler = scheduler;
         _kernelApplier = kernelApplier;
+        _reviewNotifier = reviewNotifier;
 
         // v0.4.0 起唯一应用通道为内核校时 API：可用则选中，否则无通道（绝不回退到改课表）
         _active = kernelApplier?.IsAvailable == true ? kernelApplier : null;
@@ -113,11 +118,15 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
-    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.1）。
+    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.2）。
     /// 目的：进程重启不再清空当天的样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
     /// 期间偏移会有 1~2 次无谓的小跳（2026-09-15 10:05 重启实测即如此）。
     /// 只恢复当天：跨天的基准可能已被人为校准改变，混入会污染中位数。
     /// 失败只记日志，不影响校准主链路。
+    ///
+    /// v1.0.2：恢复的是**当天全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
+    /// 由中位数与跳变检测兜住单点脏值；手动拟合另有一套更严格的「只取有效样本」口径，见
+    /// <see cref="ManualFitService"/>（两处口径不同是刻意的：手动拟合没有中位数的样本量优势）。
     /// </summary>
     private void RestoreTodaySamplesOnce()
     {
@@ -134,12 +143,27 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            var seeded = _fitter.Seed(today);
+            var seeded = _fitter.Seed(today.Select(s => (s.At, s.RequiredSec)));
             Logger.Info($"[校时] 偏移样本恢复：{note}，已导入 {seeded} 个；{_fitter.LastNote}");
         }
         catch (Exception ex)
         {
             Logger.Warn($"[校时] 偏移样本恢复失败（不影响校准）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 手动拟合（设置页按钮）改写偏移后调用：按当前样本文件重新装入当天序列，
+    /// 使运行时估计器与刚写下的值一致 —— 否则下一个边界会用旧序列再算一次、把手动结果顶掉。
+    /// 复用 <see cref="RestoreTodaySamplesOnce"/> 的同一套导入逻辑（不在这里另写一遍），
+    /// 只是先把「已恢复」标记清掉。线程安全由 <see cref="DriftFitter"/> 内部锁保证。
+    /// </summary>
+    public void ReloadTodaySamples()
+    {
+        lock (_sync)
+        {
+            _samplesRestored = false;
+            RestoreTodaySamplesOnce();
         }
     }
 
@@ -485,9 +509,10 @@ public class CalibrationRunner : IDisposable
             // v0.6.1+：把「实测切换墙钟」与「实测铃响起响点」一并交给应用管线，用真实误差 e = t_ring − t_switch 做判据。
             // v0.10.2：走到这里的测量**必然来自起响沿闸门或模板匹配**（都带独立真伪判据），
             // 启发式兜底已移除，因此应用管线不再需要「来源可信度」参数。
-            TryApplyCalibration(delta, tRingUtc, reachedUtc, config, rec, out var sampleRequired, out var sampleCurrent);
+            TryApplyCalibration(delta, tRingUtc, reachedUtc, window.Kind, window.BDisplay, config, rec,
+                out var sampleRequired, out var sampleCurrent);
 
-            // v1.0.1：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
+            // v1.0.2：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
             // 并留下可直接画走势的离线分析数据。只有走到应用管线的可信测量才落盘。
             if (sampleRequired != null || sampleCurrent != null)
             {
@@ -530,16 +555,16 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
-    /// 大误差复核阈值（秒，v0.10.2）：即便测量来自可信来源（闸门/模板），
-    /// 若本次算出的「所需偏移」与当前偏移之差超过该值，也**先拒绝写入并告警**。
+    /// 大误差复核阈值（秒）的兜底值（v1.0.2）：实际阈值取配置项
+    /// <see cref="BellCalibrationSettings.LargeErrorLimitSeconds"/>，此项仅用于配置缺省/被置零时的兜底。
     ///
     /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；出现更大的值通常意味着
     /// 校铃钟被人工大规模校准过、或系统时钟发生跳变 —— 两种情况都值得人工看一眼，
     /// 而不是让插件静静地把偏移改掉几秒。用户要求：**遇到较大误差时坚决不用脏值**。
     ///
-    /// 注意这**不是**抑制正常的首次收敛：闸门/模板都是可信来源，其 |e| 落在 ±2 s 内时照常写入。
+    /// 注意这**不是**抑制正常的首次收敛：闸门/模板都是可信来源，其 |e| 落在阈值内时照常写入。
     /// </summary>
-    public const double LargeErrorLimitSeconds = 3.0;
+    public const double DefaultLargeErrorLimitSeconds = 3.0;
 
     /// <summary>
     /// 应用管线（捕获完成的后台线程，每个窗口最多执行一次；v0.4.0 起仅内核通道）：
@@ -549,14 +574,24 @@ public class CalibrationRunner : IDisposable
     /// 未观测到切换时刻（BoundaryReached 丢失）时退化为 v0.6.0 的绝对口径 delta_abs。
     /// 各返回路径把 Gate/GateNote/Channel 写进结构化历史记录 <paramref name="rec"/>。
     /// v0.10.2：走到这里的测量必然来自起响沿闸门或模板匹配（启发式兜底已移除），
-    /// 故不再需要「来源可信度」参数；另加 <see cref="LargeErrorLimitSeconds"/> 复核。
+    /// 故不再需要「来源可信度」参数；另加大误差复核。
+    /// v1.0.2：大误差阈值改为配置项，并在拒写的同时经 <see cref="BellReviewNotifier"/> 弹出人工复核提醒。
     /// </summary>
+    /// <param name="deltaAbs">绝对口径的所需偏移（未观测到切换时的退化值）。</param>
+    /// <param name="tRingUtc">物理响铃起响点（UTC）。</param>
+    /// <param name="switchWallUtc">实测切换墙钟（UTC）；null = 未观测到切换。</param>
+    /// <param name="boundaryKind">边界类型（中文），仅用于提醒文案与日志。</param>
+    /// <param name="boundaryDisplay">课表边界 B_display，仅用于提醒文案与日志。</param>
+    /// <param name="config">当前配置快照。</param>
+    /// <param name="rec">结构化历史记录（本方法写入 Gate/GateNote/Channel）。</param>
     /// <param name="requiredSeconds">输出：本次测得的「所需绝对偏移」（秒）；因学习模式/未启用自动应用/不可信来源而未走到该步时为 null。</param>
     /// <param name="currentOffsetSeconds">输出：本次测量时的当前偏移（秒）；未读取到时为 null。</param>
     private void TryApplyCalibration(
         TimeSpan deltaAbs,
         DateTime tRingUtc,
         DateTime? switchWallUtc,
+        string boundaryKind,
+        DateTime boundaryDisplay,
         BellCalibrationSettings config,
         CalibrationHistoryRecord rec,
         out double? requiredSeconds,
@@ -639,17 +674,34 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            // 大误差复核（v0.10.2）：即便来源可信，一次要改 3 s 以上也值得人工看一眼再动手。
-            // 用户要求「遇到较大误差时坚决不用脏值」——这里拒绝写入并把原因写进历史与日志。
+            // 大误差复核（v0.10.2 拒写；v1.0.2 追加人工复核提醒）：即便来源可信，
+            // 一次要改 3 s 以上也值得人工看一眼再动手。
+            // 用户要求「遇到较大误差时坚决不用脏值」——这里拒绝写入并把原因写进历史与日志，
+            // 同时弹出提醒：只写日志意味着用户完全不知情（2026-09-17 17:10 曾静默拦下一次 5.764 s 的改动）。
+            var limitSeconds = config.LargeErrorLimitSeconds > 0
+                ? config.LargeErrorLimitSeconds
+                : DefaultLargeErrorLimitSeconds;
             var changeSeconds = Math.Abs(diff.TotalSeconds);
-            if (changeSeconds > LargeErrorLimitSeconds)
+            if (changeSeconds > limitSeconds)
             {
                 rec.Gate = "skipped";
-                rec.GateNote = $"large-error（需改 {diff.TotalSeconds:F3}s ＞ ±{LargeErrorLimitSeconds:F1}s，已拒写）";
+                rec.GateNote = $"large-error（需改 {diff.TotalSeconds:F3}s ＞ ±{limitSeconds:F1}s，已拒写）";
                 Logger.Warn(
                     $"[校时] 大误差复核：本次要把偏移从 {currentOffset:F3}s 改到 {target.TotalSeconds:F3}s" +
-                    $"（差 {diff.TotalSeconds:F3}s，超过 ±{LargeErrorLimitSeconds:F1}s），**拒绝写入**。" +
+                    $"（差 {diff.TotalSeconds:F3}s，超过 ±{limitSeconds:F1}s），**拒绝写入**。" +
                     "常见原因：校铃钟被人工大规模校准、系统时钟跳变、或信号源切换。请人工确认后再决定是否放行。");
+
+                _reviewNotifier?.NotifyLargeError(new BellReviewNotifyArgs
+                {
+                    BoundaryKind = boundaryKind,
+                    BoundaryDisplay = boundaryDisplay,
+                    ChangeSeconds = diff.TotalSeconds,
+                    CurrentOffsetSeconds = currentOffset,
+                    RequiredOffsetSeconds = target.TotalSeconds,
+                    LimitSeconds = limitSeconds,
+                    NotificationEnabled = config.EnableReviewNotification,
+                    Basis = basis
+                });
                 return;
             }
 
