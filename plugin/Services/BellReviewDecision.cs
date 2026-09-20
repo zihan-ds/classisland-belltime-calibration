@@ -34,7 +34,36 @@ public sealed class BellReviewNotifyArgs
 }
 
 /// <summary>
-/// 大误差复核提醒的判定（v1.0.2）：**纯函数**，不触碰任何 ClassIsland 类型，
+/// 双窗口冲突提醒的参数（v1.0.3）：开关窗口与课表窗口各自测到合格起响沿、位置却不一致，
+/// 且开关窗口并不明显更强 —— 此时本次**不写入**，并弹出提醒让人工确认铃况。
+/// 与 <see cref="BellReviewNotifyArgs"/> 一样刻意只带基元类型（不引用任何 ClassIsland 类型）。
+/// </summary>
+public sealed class BellReviewConflictArgs
+{
+    /// <summary>边界类型（中文：上课 / 下课）。</summary>
+    public string BoundaryKind { get; init; } = "";
+
+    /// <summary>课表边界（显示域钟面时刻）。</summary>
+    public DateTime BoundaryDisplay { get; init; }
+
+    /// <summary>开关窗口测到的铃响时刻（本地；无命中时 null）。</summary>
+    public DateTime? SwitchOnsetLocal { get; init; }
+
+    /// <summary>课表窗口测到的铃响时刻（本地；无命中时 null）。</summary>
+    public DateTime? ScheduleOnsetLocal { get; init; }
+
+    /// <summary>开关窗口命中峰值（dBFS；无命中时 null）。</summary>
+    public double? SwitchPeakDb { get; init; }
+
+    /// <summary>课表窗口命中峰值（dBFS；无命中时 null）。</summary>
+    public double? SchedulePeakDb { get; init; }
+
+    /// <summary>设置中的「人工审核提醒」开关。</summary>
+    public bool NotificationEnabled { get; init; } = true;
+}
+
+/// <summary>
+/// 大误差复核提醒的判定（v1.0.3）：**纯函数**，不触碰任何 ClassIsland 类型，
 /// 因此可被离线工具（<c>ReplayTool notify-test</c>）直接断言，不需要起宿主、不需要音频。
 ///
 /// 判定与 <see cref="CalibrationRunner"/> 里「拒写」用的是**同一个阈值**：阈值表达的是
@@ -71,4 +100,15 @@ public static class NotificationReviewDecision
 
         return (true, $"改动量 {change:F3}s 超过阈值 ±{limitSeconds:F1}s，弹出人工复核提醒");
     }
+
+    /// <summary>
+    /// 双窗口冲突提醒的判定（v1.0.3 增补）：**纯函数**，与 <see cref="BellReviewNotifyArgs"/> 那套阈值无关 ——
+    /// 冲突本身就是「两处测量各说各话」，不存在阈值问题，只由「人工审核提醒」开关决定，且**没有冷却**
+    /// （同一个冲突每次都要让用户看见，行为才可预期）。
+    /// </summary>
+    /// <param name="notificationEnabled">设置中的「人工审核提醒」开关。</param>
+    public static (bool ShouldNotify, string Why) EvaluateConflict(bool notificationEnabled)
+        => notificationEnabled
+            ? (true, "双窗口测量冲突，弹出人工复核提醒（无冷却）")
+            : (false, "「人工审核提醒」已在设置中关闭，冲突只记日志、不弹提醒");
 }

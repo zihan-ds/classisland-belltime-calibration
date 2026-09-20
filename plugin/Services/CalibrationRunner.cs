@@ -37,13 +37,13 @@ public class CalibrationRunner : IDisposable
     /// <summary>偏移拟合器（v0.7.0）：多次测量最小二乘拟合广播铃钟的规律性走时偏差。</summary>
     private readonly DriftFitter _fitter = new();
 
-    /// <summary>大误差人工复核提醒（v1.0.2）；宿主未提供提醒能力时为 null，此时只记日志。</summary>
+    /// <summary>大误差人工复核提醒（v1.0.3）；宿主未提供提醒能力时为 null，此时只记日志。</summary>
     private readonly BellReviewNotifier? _reviewNotifier;
 
     /// <summary>当前进行中的监听窗口；null = 空闲（上一窗口未结束时新窗口直接跳过）。</summary>
     private ActiveWindow? _window;
 
-    /// <summary>当天历史样本是否已恢复（v1.0.2；只恢复一次，避免每个窗口重复计入）。</summary>
+    /// <summary>当天历史样本是否已恢复（v1.0.1；只恢复一次，避免每个窗口重复计入）。</summary>
     private bool _samplesRestored;
 
     /// <summary>
@@ -118,13 +118,13 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
-    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.2）。
+    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.1）。
     /// 目的：进程重启不再清空当天的样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
     /// 期间偏移会有 1~2 次无谓的小跳（2026-09-15 10:05 重启实测即如此）。
     /// 只恢复当天：跨天的基准可能已被人为校准改变，混入会污染中位数。
     /// 失败只记日志，不影响校准主链路。
     ///
-    /// v1.0.2：恢复的是**当天全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
+    /// v1.0.3：恢复的是**当天全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
     /// 由中位数与跳变检测兜住单点脏值；手动拟合另有一套更严格的「只取有效样本」口径，见
     /// <see cref="ManualFitService"/>（两处口径不同是刻意的：手动拟合没有中位数的样本量优势）。
     /// </summary>
@@ -368,14 +368,65 @@ public class CalibrationRunner : IDisposable
             // ② 排除渐强噪声（实测伪匹配绝对电平甚至比真铃更响，但起响比值只有 1~3×）。
             // 不依赖波形对齐 —— 实测同一「下课铃」在各边界的波形互相关仅 0.08~0.64，
             // 精确模板匹配跨边界 0 命中（详见 plugin/tools/README.md 验收表与 bell-recordings/对照记录.md）。
+            //
+            // v1.0.3 增补：**双窗口复核**。上面的窗口中心是 B_wall = B_display − 偏移，即内核真正切换的位置，
+            // 而它本身正是要被校准的量 —— 偏移一旦偏出 ±2 s，闸门就只看得到开关附近的杂音（2026-09-20 上午
+            // 4 个下课窗口各写入 +0.3~+1.3 s，把偏移从 6.34 推到 8.13，而真铃那时就在课表边界上、还强 14~18 dB）。
+            // 因此再扫一遍以**标称边界**（与当前偏移无关）为中心的同一判据窗口，两侧一致才照旧采用。
             OnsetGate.OnsetHit? gateHit = null;
+            OnsetGate.OnsetHit? switchHitRaw = null;   // 原始开关窗口命中（供日志与冲突提醒；Reconcile 会把冲突时的返回值清成 null）
             string gateNote = "";
+            OnsetGate.OnsetHit? scheduleHit = null;
+            string scheduleNote = "";
+            string reconcileNote = "";
+            var verdict = OnsetGate.WindowVerdict.None;
             if (result.Audio != null && result.Audio.Length > 0)
             {
-                gateHit = OnsetGate.Find(result.Audio, boundaryWallLocal, out gateNote);
-                Logger.Info(gateHit != null
-                    ? $"[校时] 起响沿闸门命中：{gateNote}"
-                    : $"[校时] 起响沿闸门未命中：{gateNote}");
+                switchHitRaw = OnsetGate.Find(result.Audio, boundaryWallLocal, out gateNote);
+
+                // 课表窗口中心 = 标称边界的真实墙钟。显示域 = 真墙钟 + 偏移，且 B_wall = B_display − 偏移，
+                // 故 B_display = B_wall + 偏移；当前偏移读数拿不到时按 0 处理（此时两窗口重合、天然一致）。
+                var offsetForSchedule = _active?.CurrentOffsetSeconds ?? 0;
+                var scheduleCenterLocal = boundaryWallLocal.AddSeconds(offsetForSchedule);
+                scheduleHit = OnsetGate.Find(result.Audio, scheduleCenterLocal, out scheduleNote);
+
+                gateHit = OnsetGate.Reconcile(switchHitRaw, scheduleHit, out verdict, out reconcileNote);
+
+                Logger.Info(
+                    $"[校时] 起响沿闸门（开关窗口）：{gateNote}；[课表窗口] {scheduleNote}；复核：{reconcileNote}");
+            }
+
+            // ── 路径 b0：双窗口冲突（v1.0.3）──
+            // 两侧各自都测到合格起响沿、位置却不一致，且开关窗口并不明显更强：说明当前偏移已经把闸门锚在了
+            // 错误的位置上。此时**绝不写入**：写进去的"小修正"其实是杂音的坐标，正是 2026-09-20 上午把偏移
+            // 从 6.338 推到 8.132 的原因。也不落样本（脏样本会污染中位数估计），只记日志/历史并提醒人工。
+            if (verdict == OnsetGate.WindowVerdict.Conflict)
+            {
+                rec.Outcome = "match-conflict";
+                rec.EndedBy = result.EndedBy;
+                rec.CaptureSec = Math.Round(result.CaptureDuration.TotalSeconds, 3);
+                rec.NoiseFloorDb = result.NoiseFloorDb;
+                rec.PeakDb = result.MaxRmsDb;
+                rec.Gate = "skipped";
+                rec.GateNote = $"match-conflict；{reconcileNote}";
+                CalibrationHistory.Append(rec);
+                appended = true;
+
+                Logger.Warn(
+                    $"[校时] 双窗口冲突，本次不写入（{window.Kind} B_display={window.BDisplay:HH:mm:ss.fff}）：" +
+                    $"开关窗口 {gateNote}；课表窗口 {scheduleNote}；{reconcileNote}");
+
+                _reviewNotifier?.NotifyConflict(new BellReviewConflictArgs
+                {
+                    BoundaryKind = window.Kind,
+                    BoundaryDisplay = window.BDisplay,
+                    SwitchOnsetLocal = switchHitRaw?.OnsetUtc.ToLocalTime(),
+                    ScheduleOnsetLocal = scheduleHit?.OnsetUtc.ToLocalTime(),
+                    SwitchPeakDb = switchHitRaw == null ? null : ToDb(switchHitRaw.Value.PeakRms),
+                    SchedulePeakDb = scheduleHit == null ? null : ToDb(scheduleHit.Value.PeakRms),
+                    NotificationEnabled = config.EnableReviewNotification
+                });
+                return;
             }
 
             // ── 辅助路径：模板匹配（闸门未命中时才尝试，命中则省一次全区间扫描）──
@@ -453,7 +504,7 @@ public class CalibrationRunner : IDisposable
 
                 var templatePart = keepAudio ? $"；模板：{templateNote}" : "";
                 Logger.Info(
-                    $"[校时] 无可信测量（{rec.Outcome}）：闸门：{gateNote}{templatePart}；" +
+                    $"[校时] 无可信测量（{rec.Outcome}）：闸门：{gateNote}；课表窗口：{scheduleNote}{templatePart}；" +
                     "本次作废，不应用（已移除启发式兜底：其实测误差可达 −7.8~+8.1 s，属已确认不准的办法）。");
                 return;
             }
@@ -466,7 +517,7 @@ public class CalibrationRunner : IDisposable
             var delta = boundaryWallLocal - tRingLocal;
             var windowDuration = (DateTime.UtcNow - window.StartWallUtc).TotalSeconds;
             var sourceNote = gateHit != null
-                ? $"起响沿闸门（{gateNote}）"
+                ? $"起响沿闸门（{gateNote}）；双窗口复核：{reconcileNote}"
                 : $"模板匹配命中（{templateNote}）";
 
             Logger.Info(
@@ -512,7 +563,7 @@ public class CalibrationRunner : IDisposable
             TryApplyCalibration(delta, tRingUtc, reachedUtc, window.Kind, window.BDisplay, config, rec,
                 out var sampleRequired, out var sampleCurrent);
 
-            // v1.0.2：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
+            // v1.0.1：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
             // 并留下可直接画走势的离线分析数据。只有走到应用管线的可信测量才落盘。
             if (sampleRequired != null || sampleCurrent != null)
             {
@@ -555,7 +606,7 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
-    /// 大误差复核阈值（秒）的兜底值（v1.0.2）：实际阈值取配置项
+    /// 大误差复核阈值（秒）的兜底值（v1.0.3）：实际阈值取配置项
     /// <see cref="BellCalibrationSettings.LargeErrorLimitSeconds"/>，此项仅用于配置缺省/被置零时的兜底。
     ///
     /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；出现更大的值通常意味着
@@ -575,7 +626,7 @@ public class CalibrationRunner : IDisposable
     /// 各返回路径把 Gate/GateNote/Channel 写进结构化历史记录 <paramref name="rec"/>。
     /// v0.10.2：走到这里的测量必然来自起响沿闸门或模板匹配（启发式兜底已移除），
     /// 故不再需要「来源可信度」参数；另加大误差复核。
-    /// v1.0.2：大误差阈值改为配置项，并在拒写的同时经 <see cref="BellReviewNotifier"/> 弹出人工复核提醒。
+    /// v1.0.3：大误差阈值改为配置项，并在拒写的同时经 <see cref="BellReviewNotifier"/> 弹出人工复核提醒。
     /// </summary>
     /// <param name="deltaAbs">绝对口径的所需偏移（未观测到切换时的退化值）。</param>
     /// <param name="tRingUtc">物理响铃起响点（UTC）。</param>
@@ -647,9 +698,12 @@ public class CalibrationRunner : IDisposable
             }
             else
             {
-                // 退化：未观测到切换 → 绝对口径（delta_abs 即所需总偏移）
-                required = deltaAbs;
-                basis = $"未观测到切换，按绝对口径 → 本次所需偏移 {required.TotalSeconds:F3}s";
+                // 退化：未观测到切换 → 绝对口径。注意 delta_abs = (B_display − 偏移) − 铃响 是**相对当前开关的残差**，
+                // 必须加回当前偏移才是「所需绝对偏移」（B_display − 铃响）；漏加会整整偏一个当前偏移，
+                // 实机 4 条实例（2026-09-16 18:50 / 09-17 17:10 / 09-17 18:50 / 09-20 18:50）偏差恰为 4.22 / 6.68 / 7.51 / 1.37 s。
+                required = CorrectionPolicy.RequiredFromAbsolute(deltaAbs, currentOffset);
+                basis = $"未观测到切换，按绝对口径（残差 {deltaAbs.TotalSeconds:F3}s + 当前偏移 {currentOffset:F3}s）" +
+                        $" → 本次所需偏移 {required.TotalSeconds:F3}s";
             }
 
             requiredSeconds = required.TotalSeconds;
@@ -674,7 +728,7 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            // 大误差复核（v0.10.2 拒写；v1.0.2 追加人工复核提醒）：即便来源可信，
+            // 大误差复核（v0.10.2 拒写；v1.0.3 追加人工复核提醒）：即便来源可信，
             // 一次要改 3 s 以上也值得人工看一眼再动手。
             // 用户要求「遇到较大误差时坚决不用脏值」——这里拒绝写入并把原因写进历史与日志，
             // 同时弹出提醒：只写日志意味着用户完全不知情（2026-09-17 17:10 曾静默拦下一次 5.764 s 的改动）。
@@ -717,6 +771,9 @@ public class CalibrationRunner : IDisposable
         }
     }
 
+    /// <summary>线性 RMS → dBFS（仅用于日志与提醒文案）。</summary>
+    private static double ToDb(double linear) => 20 * Math.Log10(Math.Max(linear, 1e-12));
+
     /// <summary>
     /// 调试音频转存：把本窗口音频写成 WAV（&lt;插件配置目录&gt;\Dumps\）；仅在配置开启时调用。
     /// </summary>
@@ -731,9 +788,20 @@ public class CalibrationRunner : IDisposable
             var name = $"{window.StartWallUtc.ToLocalTime():yyyyMMdd-HHmmss}-{window.Kind}-B{window.BDisplay:HHmmss}.wav";
             var path = System.IO.Path.Combine(folder, "Dumps", name);
             if (audio.SaveWav(path, out var note))
-                Logger.Info($"[校时] 调试音频转存：{path}（{note}）");
+            {
+                // v1.0.3：把音频锚点单独写清楚。文件名里的起点是**布防时刻**，而闸门判据用的是
+                // 音频回调首个 block 的时刻（AnchorWallLocal）；两者通常只差几十毫秒，但一旦不同，
+                // 离线拿文件内位置去对闸门的位置就会整体错位（本次排查为此反复得出相反结论）。
+                var anchorLocal = audio.AnchorWallLocal;
+                var anchorNote = anchorLocal == DateTime.MinValue
+                    ? "无锚点"
+                    : $"音频锚点 {anchorLocal:HH:mm:ss.fff}（相对布防 {(anchorLocal - window.StartWallUtc.ToLocalTime()).TotalSeconds:+0.000;-0.000;0.000}s）";
+                Logger.Info($"[校时] 调试音频转存：{path}（{note}；{anchorNote}）");
+            }
             else
+            {
                 Logger.Warn($"[校时] 调试音频转存失败：{note}");
+            }
         }
         catch (Exception ex)
         {

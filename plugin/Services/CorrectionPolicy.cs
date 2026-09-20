@@ -19,6 +19,22 @@ namespace BellTimeCalibration.Services;
 /// </summary>
 public class CorrectionPolicy
 {
+    /// <summary>
+    /// 未观测到切换时的绝对口径换算（v1.0.3）：把「相对当前开关的残差」还原为「所需绝对偏移」。
+    ///
+    /// <para>delta_abs 的定义是 <c>(B_display − 偏移) − 铃响</c> —— 它描述的是「当前开关还差多少才对齐」，
+    /// 而不是「偏移该设成多少」。真正的绝对所需偏移是 <c>B_display − 铃响</c>，正好等于
+    /// <c>delta_abs + 当前偏移</c>。漏掉后半项会整整偏一个当前偏移（偏移越大偏得越多）。</para>
+    ///
+    /// <para>实机 4 条实例（记录值 + 当时偏移 = 真值；旧口径偏差恰为 4.22 / 6.68 / 7.51 / 1.37 s）：
+    /// 2026-09-16 18:50（−0.79 + (−4.22) = −5.01）、2026-09-17 17:10（−0.91 + (−6.68) = −7.59）、
+    /// 2026-09-17 18:50（+0.29 + (−7.51) = −7.22）、2026-09-20 18:50（+0.86 + (−1.374) = −0.51）。</para>
+    /// </summary>
+    /// <param name="deltaAbs">相对当前开关的残差（秒）。</param>
+    /// <param name="currentOffsetSeconds">当前内核偏移（秒）。</param>
+    public static TimeSpan RequiredFromAbsolute(TimeSpan deltaAbs, double currentOffsetSeconds)
+        => deltaAbs + TimeSpan.FromSeconds(currentOffsetSeconds);
+
     private const int HistoryCap = 20;
 
     private readonly List<TimeSpan> _history = new();

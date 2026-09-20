@@ -31,7 +31,119 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         DataContext = BellTimeCalibrationPlugin.Config;
 
         LogThemeDiagnostics("设置页首次加载");
+        ReloadSampleList();
     }
+
+    /// <summary>
+    /// 样本管理的一行（v1.0.3 增补）。只做三件事：把样本字段转成界面文本、
+    /// 承载「有效」勾选框、把勾选结果写回存储。不含任何判定逻辑。
+    /// </summary>
+    private sealed class DaySampleRow : System.ComponentModel.INotifyPropertyChanged
+    {
+        private readonly string _ts;
+        private bool _valid;
+
+        public DaySampleRow(OffsetSample sample)
+        {
+            _ts = string.IsNullOrEmpty(sample.Ts)
+                ? sample.At.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                : sample.Ts;
+            TimeText = sample.At.ToString("HH:mm:ss.fff");
+            Kind = string.IsNullOrEmpty(sample.Kind) ? "-" : sample.Kind;
+            Boundary = string.IsNullOrEmpty(sample.BoundaryDisplay) ? "-" : sample.BoundaryDisplay;
+            RequiredText = $"{sample.RequiredSec:+0.000;-0.000;0.000} s";
+            AppliedText = sample.Applied ? "是" : "否";
+            // 让「为什么默认勾 / 不勾」一眼可见
+            OriginText = sample.Applied ? "写入过"
+                : sample.InDeadZone ? "死区带内（未写）"
+                : "大误差拒写";
+            _valid = sample.UserValid;
+        }
+
+        public string TimeText { get; }
+
+        public string Kind { get; }
+
+        public string Boundary { get; }
+
+        public string RequiredText { get; }
+
+        public string AppliedText { get; }
+
+        /// <summary>判据当时把这条样本归到哪一类（写入过 / 死区带内未写 / 大误差拒写）。</summary>
+        public string OriginText { get; }
+
+        /// <summary>本行样本是否可用于拟合（人工可改）。改动立即写盘。</summary>
+        public bool Valid
+        {
+            get => _valid;
+            set
+            {
+                if (_valid == value)
+                    return;
+                _valid = value;
+                var ok = OffsetSampleStore.SetValidity(_ts, value);
+                if (!ok)
+                {
+                    // 写盘失败：把界面改回原值，避免显示与落盘不一致
+                    _valid = !value;
+                    Logger.Warn($"[校时] 样本管理：{_ts} 标记写入失败，界面已回退。");
+                }
+
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Valid)));
+            }
+        }
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    /// <summary>
+    /// 重新载入当天的样本列表（设置页打开时、以及点「重新载入」时调用）。
+    /// 全部异常就地吞掉并记日志：样本管理只是复核工具，不能影响设置页其余部分。
+    /// </summary>
+    private void ReloadSampleList()
+    {
+        try
+        {
+            var today = OffsetSampleStore.LoadToday(DateTime.Now, out var note);
+            var rows = new System.Collections.Generic.List<DaySampleRow>(today.Count);
+            foreach (var s in today)
+                rows.Add(new DaySampleRow(s));
+
+            var list = this.FindControl<ItemsControl>("SampleList");
+            if (list != null)
+                list.ItemsSource = rows;
+
+            var empty = this.FindControl<TextBlock>("SampleEmptyText");
+            if (empty != null)
+                empty.IsVisible = rows.Count == 0;
+
+            var summary = this.FindControl<TextBlock>("SampleSummaryText");
+            if (summary != null)
+            {
+                var eligible = today.Count(s => s.IsEligible);
+                var overridden = today.Count(s => s.UserValid != (s.Applied || s.InDeadZone));
+                var deadZoneOnes = today.Count(s => s.InDeadZone);
+                var rejected = today.Count(s => !s.Applied && !s.InDeadZone);
+                summary.Text = $"当天 {today.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
+                               $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
+                               $"{(rejected > 0 ? $"，大误差拒写 {rejected} 条默认不参与（可手动勾上）" : "")}" +
+                               $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{note}";
+            }
+
+            Logger.Info($"[校时] 样本管理：已载入当天样本 {today.Count} 条（{note}）。");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 样本管理：载入当天样本失败：{ex.Message}");
+            var summary = this.FindControl<TextBlock>("SampleSummaryText");
+            if (summary != null)
+                summary.Text = $"载入失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>「重新载入」按钮：重新读取当天样本（点过手动拟合之后也能刷新）。</summary>
+    private void OnReloadSamples(object? sender, RoutedEventArgs e) => ReloadSampleList();
 
     /// <summary>
     /// 主题诊断（一次性自检）：把当前主题变体与两个画刷实际解析到的颜色写进日志。
@@ -123,7 +235,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         => await PickSampleAsync(path => BellTimeCalibrationPlugin.Config.BreakBellSamplePath = path);
 
     /// <summary>
-    /// 手动拟合并应用（v1.0.2）：读当天有效样本重新分析一次，把结果直接写入
+    /// 手动拟合并应用（v1.0.3）：读当天有效样本重新分析一次，把结果直接写入
     /// 「应用设置 → 时钟 → 时间偏移」——**无视学习模式与自动应用开关**（这是一次显式的手动动作）。
     /// 全程不抛异常：任何一步失败都把原因写进结果文字与日志，绝不影响设置页交互。
     /// </summary>
@@ -135,8 +247,8 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             var result = ManualFitService.Analyze(today);
             if (result == null)
             {
-                SetFitResult($"当天没有有效样本（{note}），未做任何写入。" +
-                             "有效样本 = 当天真正写入过偏移的干净测量；大误差拒写与死区带内的存量不计入。");
+                SetFitResult($"当天没有参与拟合的样本（{note}），未做任何写入。" +
+                             "参与与否由设置页「样本管理」的勾选决定，勾上即参与。");
                 Logger.Warn($"[校时] 手动拟合：{note}；无有效样本，未写入。");
                 return;
             }
@@ -150,6 +262,18 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             }
 
             var before = applier.CurrentOffsetSeconds;
+
+            // 幂等保护（v1.0.3）：实测一次点击会执行两遍（两次调用读到的「旧值」相同，说明是两份状态各跑了一次，
+            // 最可能是设置页实例被创建了两份）。写入前先比对：目标值已到位就不再写，
+            // 避免重复写入与「由 X 改为 X」这种误导性结果文字。
+            if (before != null && Math.Abs(before.Value - result.OffsetSeconds) < 0.0005)
+            {
+                SetFitResult($"当前偏移已等于拟合值 {before.Value:F3} 秒，未重复写入。" +
+                             $"有效样本 {result.ValidCount}/{result.TotalCount}；{result.Note}");
+                Logger.Info($"[校时] 手动拟合：目标值与当前偏移一致，跳过重复写入（幂等保护）；{result.Note}");
+                return;
+            }
+
             if (!applier.Apply(TimeSpan.FromSeconds(result.OffsetSeconds)))
             {
                 SetFitResult("写入失败，详见插件日志。");
@@ -179,7 +303,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
     }
 
     /// <summary>
-    /// 发送一条测试用的「大误差人工复核提醒」（v1.0.2）：让用户随时确认提醒通道真的能弹出来，
+    /// 发送一条测试用的「大误差人工复核提醒」（v1.0.3）：让用户随时确认提醒通道真的能弹出来，
     /// 而不必等下一次真实大误差（大误差是低频事件，可能几天才出现一次）。
     /// 阈值与「人工审核提醒」开关**都不参与**（这是一次显式的手动测试），因此直接走通知门面。
     /// </summary>

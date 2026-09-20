@@ -23,7 +23,7 @@ public static class BellReviewNotificationIds
 }
 
 /// <summary>
-/// 把一条提醒交给宿主的发送通道（v1.0.2）。
+/// 把一条提醒交给宿主的发送通道（v1.0.3）。
 ///
 /// 背景（实测结论，务必保留）：宿主 <see cref="INotificationHostService"/> 的
 /// <c>ShowNotification(request, providerGuid, channelGuid, pushNotifications, isPlayed)</c> 是 internal，
@@ -126,7 +126,7 @@ public sealed class HostNotificationSender
 }
 
 /// <summary>
-/// 大误差人工复核提醒的门面（v1.0.2）：把「要提醒什么」翻译成一条 ClassIsland 提醒，
+/// 大误差人工复核提醒的门面（v1.0.3）：把「要提醒什么」翻译成一条 ClassIsland 提醒，
 /// 把「要不要弹」交给纯函数 <see cref="NotificationReviewDecision"/> 判定（判定单独成文件，
 /// 便于离线断言；本文件才有宿主依赖）。
 ///
@@ -227,6 +227,64 @@ public sealed class BellReviewNotifier
         {
             // 提醒失败绝不影响校准：这里只记日志
             Logger.Warn($"[校时] 人工复核提醒弹出失败（不影响校准）：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 双窗口冲突提醒（v1.0.3）：开关窗口与课表窗口都测到合格起响沿、位置却不一致，且开关窗口并不明显更强，
+    /// 于是本次**拒绝写入**（那点「小修正」其实是杂音的坐标）。
+    ///
+    /// 为什么不只写日志：被静默拦下的偏差，用户根本不知道要去看日志 —— 与大误差拒写同理，这条路径必须有出口。
+    /// 只受「人工审核提醒」开关约束，**没有冷却**（同一个冲突每次都要让用户看见，行为才可预期）。
+    /// </summary>
+    /// <param name="args">冲突内容参数（全部为基元类型）。</param>
+    /// <returns>true = 本次确实弹出了提醒。</returns>
+    public bool NotifyConflict(BellReviewConflictArgs args)
+    {
+        try
+        {
+            var (shouldNotify, why) = NotificationReviewDecision.EvaluateConflict(args.NotificationEnabled);
+            if (!shouldNotify)
+            {
+                Logger.Info($"[校时] 双窗口冲突提醒：不弹出（{why}）。");
+                return false;
+            }
+
+            if (_sender == null)
+            {
+                Logger.Warn($"[校时] 双窗口冲突提醒：需要弹出，但宿主未提供提醒发送通道，本次只记日志。");
+                return false;
+            }
+
+            static string Clock(DateTime? t) => t == null ? "无命中" : t.Value.ToString("HH:mm:ss.fff");
+            static string Db(double? db) => db == null ? "n/a" : $"{db.Value:F1} dBFS";
+
+            var text =
+                $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：同一段录音里两处测量互相矛盾 —— " +
+                $"开关窗口（当前偏移的位置）测到 {Clock(args.SwitchOnsetLocal)}（{Db(args.SwitchPeakDb)}），" +
+                $"课表窗口（课表边界的位置）测到 {Clock(args.ScheduleOnsetLocal)}（{Db(args.SchedulePeakDb)}）。" +
+                "本次不写入偏移（写进去的其实是杂音的坐标）。请人工确认铃况与偏移设置后再决定是否手动校准。";
+
+            var request = new NotificationRequest
+            {
+                MaskContent = NotificationContent.CreateTwoIconsMask("铃声校时：两处测量冲突", rightIcon: "\uE7BA"),
+                OverlayContent = NotificationContent.CreateSimpleTextContent(text),
+                RequestNotificationSettings = new NotificationSettings
+                {
+                    IsSettingsEnabled = false
+                }
+            };
+
+            if (!_sender.Send(request, m => Logger.Warn(m)))
+                return false;
+
+            Logger.Warn($"[校时] 双窗口冲突提醒：已弹出。{text}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 双窗口冲突提醒弹出失败（不影响校准）：{ex.Message}");
             return false;
         }
     }

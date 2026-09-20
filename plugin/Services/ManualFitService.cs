@@ -24,17 +24,19 @@ public sealed record ManualFitResult(
     string Note);
 
 /// <summary>
-/// 手动拟合（v1.0.2，设置页「手动拟合并应用」按钮背后的纯逻辑）。
+/// 手动拟合（v1.0.3，设置页「手动拟合并应用」按钮背后的纯逻辑）。
 ///
 /// 做什么：读当天已落盘的样本 → 只保留**有效样本** → 用与运行时**完全相同**的估计器
 /// （<see cref="DriftFitter"/>：近 <see cref="DriftFitter.WindowHours"/> 小时中位数，
 /// 趋势外推仅在样本数/跨度/残差三项门槛同时满足时启用）算一次所需偏移，交给调用方写入。
 ///
-/// 为什么叫「有效样本」而不是「全部样本」：<see cref="OffsetSample.Applied"/> 为 false 的样本
-/// 有两种来源，都不是干净测量 —— 死区带内（偏移没动的存量，不代表当前基准）与大误差拒写
-/// （含未观测到切换的退化绝对口径；实机 2026-09-17 就留下过 −0.91 / +0.29 两条，
-/// 与当天真实基准 −7 s 相差近 7 秒且会被签名成「正常测量」）。用它们拟合等于把脏值写进设置项，
-/// 正是「坚决不用脏值」要避免的事。这里不另造启发式（MAD/残差阈值之类），只用样本自带的标记。
+/// 什么叫「有效样本」（<see cref="OffsetSample.IsEligible"/>）：**由人工复核结论决定**（设置页「样本管理」）——
+/// 勾选即参与，取消勾选即不参与；默认勾选状态 = 判据原判（<see cref="OffsetSample.Applied"/>，
+/// 即本次真的写入过偏移）。**人工设为有效的一律参与，无论当初是否被写入过**；
+/// <see cref="OffsetSample.Applied"/> = false 的样本默认不勾选，因为它的两种来源通常不是干净测量：
+/// 死区带内（偏移没动的存量，不代表当前基准）与大误差拒写（含未观测到切换的退化绝对口径；
+/// 实机 2026-09-17 留下过 −0.91 / +0.29 两条）——但使用者判断可信时可以手动勾上。
+/// 不使用任何启发式阈值（MAD/残差之类），只用这一个显式标记。
 ///
 /// 为什么用 <see cref="DriftFitter.Seed"/> 而不是逐条 <see cref="DriftFitter.Add"/>：
 /// Add 带 2.5 s 跳变检测，序列里只要夹进一条脏样本就会清空整段重开，
@@ -50,7 +52,7 @@ public static class ManualFitService
     public static ManualFitResult? Analyze(IEnumerable<OffsetSample> todaySamples)
     {
         var all = todaySamples?.ToList() ?? new List<OffsetSample>();
-        var valid = all.Where(s => s.Applied)
+        var valid = all.Where(s => s.IsEligible)
             .OrderBy(s => s.At)
             .ToList();
 
@@ -86,6 +88,7 @@ public static class ManualFitService
             : $"（由 {previousOffsetSeconds.Value:F3} 改为 {result.OffsetSeconds:F3}，" +
               $"差 {result.OffsetSeconds - previousOffsetSeconds.Value:+0.000;-0.000;0.000}）";
         return $"已写入 {result.OffsetSeconds:F3} 秒{change}；" +
-               $"有效样本 {result.ValidCount}/{result.TotalCount}；{result.Note}";
+               $"参与拟合样本 {result.ValidCount}/{result.TotalCount}（勾选即参与，可在设置页「样本管理」里调整）；" +
+               $"{result.Note}";
     }
 }

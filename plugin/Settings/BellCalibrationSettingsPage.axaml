@@ -54,7 +54,7 @@
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="8">
           <TextBlock Text="手动拟合" FontSize="15" FontWeight="Bold"/>
-          <TextBlock Text="按当天已落盘的有效样本（只取干净测量，即真正写入过偏移的那些；大误差拒写与死区带内的存量不计入）重新分析一次，并立即把结果写入「应用设置 → 时钟 → 时间偏移」。此动作无视学习模式与自动应用开关 —— 按下即写。"
+          <TextBlock Text="按当天参与拟合的样本（默认含两类：判据写入过的、以及落在死区带内没写的；大误差拒写的默认不计入，可在下方样本管理里手动勾上）重新分析一次，并立即把结果写入「应用设置 → 时钟 → 时间偏移」。此动作无视学习模式与自动应用开关 —— 按下即写。"
                      Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <Grid ColumnDefinitions="Auto,*">
@@ -63,6 +63,52 @@
                        FontSize="12" TextWrapping="Wrap"
                        Text="尚未执行。"/>
           </Grid>
+        </StackPanel>
+      </Border>
+
+      <!-- ═══ 样本管理 ═══ -->
+      <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
+        <StackPanel Spacing="8">
+          <TextBlock Text="样本管理" FontSize="15" FontWeight="Bold"/>
+          <TextBlock Text="列出当天已落盘的样本。勾选 = 参与「手动拟合并应用」的拟合；取消勾选 = 不参与。默认勾选：判据写入过的勾选，**落在死区带内没写的也勾选**（当时已经够准所以没动偏移，测量同样干净），大误差拒写的默认不勾选。人工随时可改，且人工结论优先；人工勾上的样本即使当初没被写入过也会参与。此标记只影响手动拟合，不改动自动应用链路的内部样本序列。"
+                     Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
+
+          <Grid ColumnDefinitions="Auto,*">
+            <Button Grid.Column="0" Content="重新载入" Click="OnReloadSamples"/>
+            <TextBlock Grid.Column="1" Name="SampleSummaryText" Margin="10,0,0,0" VerticalAlignment="Center"
+                       FontSize="12" TextWrapping="Wrap" Text="正在载入…"/>
+          </Grid>
+
+          <Grid ColumnDefinitions="120,60,110,110,80,110,*" Margin="0,4,0,0">
+            <TextBlock Grid.Column="0" Text="铃响时刻" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" Text="类型" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="2" Text="课表边界" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="3" Text="所需偏移" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="4" Text="判据写入" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="5" Text="判据位置" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="6" Text="参与拟合" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+          </Grid>
+
+          <ItemsControl Name="SampleList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnDefinitions="120,60,110,110,80,110,*" Margin="0,2,0,2">
+                  <TextBlock Grid.Column="0" Text="{Binding TimeText}" FontSize="12" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="{Binding Kind}" FontSize="12" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="2" Text="{Binding Boundary}" FontSize="12" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="3" Text="{Binding RequiredText}" FontSize="12" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="4" Text="{Binding AppliedText}" FontSize="12" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="5" Text="{Binding OriginText}" FontSize="12" VerticalAlignment="Center"/>
+                  <!-- 勾选框默认按拉伸对齐，会比同一行的文字偏上；显式垂直居中，并用负外边距抵掉它自带的内边距 -->
+                  <CheckBox Grid.Column="6" Margin="0,-2,0,-2" VerticalAlignment="Center"
+                            IsChecked="{Binding Valid, Mode=TwoWay}"/>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <TextBlock Name="SampleEmptyText" Text="当天暂无样本。" FontSize="12"
+                     Classes="bellhint" Foreground="{DynamicResource BellHintBrush}" IsVisible="False"/>
         </StackPanel>
       </Border>
 
@@ -135,11 +181,11 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="忽略的边界时刻" FontSize="13"/>
-              <TextBlock Text="这些边界不监听、不校准（HH:mm，逗号分隔）。默认屏蔽 08:00、18:30——这两次铃声与已采集的铃声样本音色不一致，检测不到有效样本"
+              <TextBlock Text="列在这里的边界不监听、不校准。格式：HH:mm，多个用逗号分隔。留空 = 每个边界都监听。只有当某几个边界反复测不到（日志里总是无可信测量）时才填。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <TextBox Grid.Column="1" VerticalAlignment="Center" Width="130"
-                     Watermark="08:00,18:30"
+                     Watermark="留空=不忽略"
                      Text="{Binding IgnoredBoundaries, Mode=TwoWay}"/>
           </Grid>
         </StackPanel>

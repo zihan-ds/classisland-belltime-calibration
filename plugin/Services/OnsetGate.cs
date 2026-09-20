@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace BellTimeCalibration.Services;
 
@@ -31,6 +32,21 @@ public static class OnsetGate
     public const double RatioMin = 4.0;
 
     /// <summary>
+    /// 强候选组容差（dB，v1.0.3）：只在与窗内最强候选相差不超过该值的候选里，再按比值挑最终起响点。
+    ///
+    /// 为什么要加这道门（2026-09-18 实机 111 个 dump 的复盘）：
+    /// 旧判据单看「起响比值最大」，而比值 = 起响后 0.5 s 峰值 RMS ÷ 起响前 0.3 s 基线 RMS —— 只要起响前那 0.3 s
+    /// 恰好落在噪声间隙里，一个**弱**瞬态就能凑出很高的比值，把真正更响的那次起响挤掉。实测两例：
+    /// <list type="bullet">
+    /// <item><description>20260918 11:40 窗口（用户举报）：选中点峰值 −17.5 dBFS，同窗更强事件约 −10.5 dBFS，<b>差约 7 dB</b>；</description></item>
+    /// <item><description>20260918 09:40 窗口：选中点峰值 −28.2 dBFS（比值 32.2×），同窗更强事件 −21.2 dBFS（比值 10.0×），<b>差 7.0 dB</b>。</description></item>
+    /// </list>
+    /// 反过来，111 个窗口里新旧两种选法多数几乎一致（中位差 0.05 s），所以这里只是**收敛**判据、不做替换：
+    /// 先框定「与最强事件同一量级」的候选组，再用比值挑最像铃声的那一下。
+    /// </summary>
+    public const double DominanceDb = 6.0;
+
+    /// <summary>
     /// 起响处绝对电平下限（v0.10.4）：与 <see cref="RingDetector.AbsoluteMinRms"/> 同口径（约 −50 dBFS）。
     /// 只靠比值会被「静音窗口的噪声除噪声」骗过（实测噪声底 −80 dBFS、峰值 −114.5 dBFS 仍报出 6.2× 命中）。
     /// 真铃声起响峰值实测 −6.8~−13.9 dBFS，与下限留 36 dB 余量。
@@ -49,7 +65,19 @@ public static class OnsetGate
     /// <param name="OnsetUtc">起响点墙钟（UTC）。</param>
     /// <param name="Ratio">起响比值（倍）。</param>
     /// <param name="Note">说明（中文，供日志）。</param>
-    public readonly record struct OnsetHit(int OnsetSampleIndex, DateTime OnsetUtc, double Ratio, string Note);
+    /// <param name="AnchorWallLocal">本窗口音频锚点墙钟（本地）= 首个音频块的回调时刻（v1.0.3，供离线复算对齐）。</param>
+    /// <param name="GateFromSeconds">闸门区间起点在本窗口音频内的秒数（v1.0.3）。</param>
+    /// <param name="GateToSeconds">闸门区间终点在本窗口音频内的秒数（v1.0.3）。</param>
+    /// <param name="PeakRms">选中起响点后 0.5 s 的峰值 RMS（v1.0.3 增补；供「双窗口复核」比较两侧证据强弱）。</param>
+    public readonly record struct OnsetHit(
+        int OnsetSampleIndex,
+        DateTime OnsetUtc,
+        double Ratio,
+        string Note,
+        DateTime AnchorWallLocal = default,
+        double GateFromSeconds = 0,
+        double GateToSeconds = 0,
+        double PeakRms = 0);
 
     /// <summary>
     /// 在「边界 ±<see cref="GateSeconds"/> 秒」内找起响比值最大的位置。
@@ -98,6 +126,11 @@ public static class OnsetGate
         var bestPeak = 0.0;
         var scanBest = 0.0;
         var scanPeakMax = 0.0;
+
+        // ── 两趟扫描（v1.0.3）──
+        // 第一趟只收集候选：每个候选的基线/峰值仍由前缀和 O(1) 递推，性能与旧实现相同。
+        var candidates = new List<(int Idx, double Ratio, double Peak)>();
+        var silentBaselineCandidates = 0;   // 基线落在数字静默里的候选数（诊断用）
         for (var idx = gateFrom; idx <= gateTo; idx += stepSamples)
         {
             var baseFrom = idx - baseSamples;
@@ -106,17 +139,55 @@ public static class OnsetGate
 
             var baseline = Rms(baseFrom, idx);
             var peak = Rms(idx, Math.Min(audio.Length, idx + peakSamples));
-            var ratio = peak / Math.Max(baseline, 1e-9);
+
+            // ── 基线有效性门槛（v1.0.3）──
+            // 比值 = 峰值 ÷ 基线；基线若是**数字静默**（麦克风整段未进音后恢复供音），除数≈0，
+            // 比值会炸成千万级，把「麦克风恢复出声的那一瞬间」选成铃声。
+            // 实机证据（2026-09-19 上午）：8 个窗口各含 10~21 s 全零静默，闸门报出
+            // 「起响比值 748579× ~ 96702200×」，delta 集中在 −1.68/−1.98/−1.99 s（恢复点的机器特征），
+            // 而真铃的起响比值实测只有 4~346×。这类候选的比值**没有物理意义**，直接排除。
+            // 阈值取 RingDetector.NoiseFloorMin（1e-4 ≈ −80 dBFS，已存在的常量，不新增口径）。
+            if (baseline < RingDetector.NoiseFloorMin)
+            {
+                silentBaselineCandidates++;
+                candidates.Add((idx, 0, peak));   // 比值记 0：保留计数与峰值用于诊断，但不参与选择
+                if (peak > scanPeakMax)
+                    scanPeakMax = peak;
+                continue;
+            }
+
+            var ratio = peak / baseline;
             if (ratio > scanBest)
                 scanBest = ratio;
             if (peak > scanPeakMax)
                 scanPeakMax = peak;
 
-            if (ratio > bestRatio)
+            candidates.Add((idx, ratio, peak));
+        }
+
+        // 绝对电平下限（v0.10.4）与比值下限（v0.10.0）两道门槛语义不变：不合格的候选一律不参与选择。
+        var qualified = candidates
+            .Where(c => c.Peak >= AbsoluteMinRms && c.Ratio >= RatioMin)
+            .ToList();
+
+        // 第二趟：先框定「强候选组」，再在组内按比值取最优（见 DominanceDb 注释）。
+        var strongCount = 0;
+        var strongPeakMax = 0.0;
+        if (qualified.Count > 0)
+        {
+            strongPeakMax = qualified.Max(c => c.Peak);
+            var strongFloor = strongPeakMax * Math.Pow(10, -DominanceDb / 20.0);
+            foreach (var c in qualified)
             {
-                bestRatio = ratio;
-                bestIdx = idx;
-                bestPeak = peak;
+                if (c.Peak < strongFloor)
+                    continue;
+                strongCount++;
+                if (c.Ratio > bestRatio)
+                {
+                    bestRatio = c.Ratio;
+                    bestIdx = c.Idx;
+                    bestPeak = c.Peak;
+                }
             }
         }
 
@@ -126,17 +197,22 @@ public static class OnsetGate
         // ——峰值比噪声底还低 34 dB 且等于数字静默，闸门却报了「命中 6.2×」。若自动应用开着，
         // 这一次就会写出一个完全错误的偏移。真铃声的起响峰值实测在 −6.8~−13.9 dBFS，
         // 与下限之间留 36 dB 余量，不会误杀。
-        if (bestIdx >= 0 && bestPeak < AbsoluteMinRms)
+        if (bestIdx < 0 && candidates.Count > 0 && candidates.Max(c => c.Peak) < AbsoluteMinRms)
         {
-            note = $"边界 ±{GateSeconds:F1}s 内起响沿电平过低（峰值 {ToDb(bestPeak):F1} dBFS，" +
+            note = $"边界 ±{GateSeconds:F1}s 内起响沿电平过低（峰值 {ToDb(candidates.Max(c => c.Peak)):F1} dBFS，" +
                    $"下限 {ToDb(AbsoluteMinRms):F1} dBFS）→ 判为静音/麦克风未进音，拒绝本次测量";
             return null;
         }
 
         if (bestIdx < 0 || bestRatio < RatioMin)
         {
+            // 基线静默占比高时把原因说清楚：这类窗口的「没命中」不是判据太严，而是**传感器没进音**，
+            // 使用者该去查设备/权限，而不是去调阈值（2026-09-19 上午整段如此）。
+            var silentNote = silentBaselineCandidates > 0
+                ? $"；其中 {silentBaselineCandidates} 个候选的起响前 0.3s 落在数字静默里（比值不可信，已排除——多为麦克风未进音）"
+                : "";
             note = $"边界 ±{GateSeconds:F1}s 内无合格起响沿（最佳起响比值 {scanBest:F1}×，下限 {RatioMin:F1}×" +
-                   $"；该区间峰值 {ToDb(scanPeakMax):F1} dBFS）";
+                   $"；该区间峰值 {ToDb(scanPeakMax):F1} dBFS）{silentNote}";
             return null;
         }
 
@@ -149,9 +225,129 @@ public static class OnsetGate
 
         var onsetLocal = onsetUtc.Value.ToLocalTime();
         var offsetSec = (onsetLocal - boundaryWallLocal).TotalSeconds;
+
+        // 候选摘要（v1.0.3）：把「最强候选是谁、强候选组多大、最终选了谁」一并写进日志。
+        // 必要性：dump 文件名用的是布防时刻，而本函数用的是音频锚点（首个块回调时刻），两者实测能差 1~3 s；
+        // 没有这行摘要，离线复算的位置与实机判据对不上（这次排查为此反复得出相反结论）。
+        var anchorLocal = audio.AnchorWallLocal;
+        var anchorDelta = anchorLocal == DateTime.MinValue
+            ? double.NaN
+            : (anchorLocal - boundaryWallLocal).TotalSeconds;
         note = $"起响沿命中：边界 {(offsetSec >= 0 ? "+" : "")}{offsetSec:F2}s，起响比值 {bestRatio:F1}×" +
-               $"（峰值 {ToDb(bestPeak):F1} dBFS）";
-        return new OnsetHit(bestIdx, onsetUtc.Value, bestRatio, note);
+               $"（峰值 {ToDb(bestPeak):F1} dBFS）；" +
+               $"候选 {candidates.Count} 个 / 合格 {qualified.Count} 个 / 强候选组 {strongCount} 个" +
+               $"（组内峰值上限 {ToDb(strongPeakMax):F1} dBFS，容差 {DominanceDb:F1} dB）" +
+               (silentBaselineCandidates > 0 ? $"；已排除 {silentBaselineCandidates} 个基线静默候选" : "") + "；" +
+               $"锚点=边界{(double.IsNaN(anchorDelta) ? "n/a" : $"{anchorDelta:+0.000;-0.000;0.000}s")}";
+
+        return new OnsetHit(
+            bestIdx, onsetUtc.Value, bestRatio, note,
+            anchorLocal,
+            gateFrom / (double)rate,
+            gateTo / (double)rate,
+            PeakRms: bestPeak);
+    }
+
+    /// <summary>
+    /// 双窗口复核的一致性容差（秒，v1.0.3）：两侧命中位置相差不超过该值即视为「同一次起响」。
+    /// 两侧扫描用的是同一套判据与步长（10 ms），只是窗口中心不同，因此同一次起响通常落在同一格。
+    /// </summary>
+    public const double AgreeSeconds = 1.0;
+
+    /// <summary>双窗口复核结论（v1.0.3）。</summary>
+    public enum WindowVerdict
+    {
+        /// <summary>两个窗口都没有合格起响沿。</summary>
+        None,
+
+        /// <summary>只有「开关窗口」命中 —— 现状路径，采用该命中。</summary>
+        SwitchOnly,
+
+        /// <summary>只有「课表窗口」命中 —— 只作旁证写日志，不作测量源（测量源仍走模板匹配/无可信测量）。</summary>
+        ScheduleOnly,
+
+        /// <summary>两侧指向同一次起响 —— 采用开关窗口命中（与旧行为完全一致）。</summary>
+        Agree,
+
+        /// <summary>两侧不一致，但开关窗口明显更强 —— 仍采用开关窗口命中（保住「铃确实比课表晚几秒」的合法测量）。</summary>
+        PreferSwitch,
+
+        /// <summary>两侧不一致且课表窗口并不更弱 —— 本次判为冲突，**不写入、不落样本**。</summary>
+        Conflict
+    }
+
+    /// <summary>
+    /// 双窗口复核（v1.0.3）：把「开关窗口」的命中与「课表窗口」的命中放在一起裁决。
+    ///
+    /// 为什么需要（2026-09-20 上午实机 4 个下课窗口 + 录音复算）：
+    /// 闸门窗口的中心是 <c>B_display − 偏移</c>，也就是**内核真正切换的位置**，而它本身正是要被校准的量。
+    /// 于是「所需偏移 = 课表边界 − 铃响」恒落在「当前偏移 ±2 s」内：偏移一旦偏出 2 s（如校铃钟被人工
+    /// 校正过、或上一轮把脏样本写进了偏移），闸门就只能看见开关附近的**杂音**，而结果看起来像一次
+    /// 正常的小修正（实测 08:50/09:40/10:50/11:40 四个窗口各写入 +0.3~+1.3 s，把偏移从 6.34 推到 8.13）。
+    /// 同一段录音里真正落在课表边界上的那一下要强 14~18 dB，但它在「开关 +6.9 s」处，被 ±2 s 窗挡在外面。
+    /// 因此这里再扫一遍**以标称边界为中心**的同一判据窗口（该中心与当前偏移无关），作为独立旁证：
+    /// 两侧一致 → 照旧；两侧分歧且开关窗口并不明显更强 → 判冲突、不写入、交人工（绝不写脏值）。
+    /// </summary>
+    /// <param name="switchHit">开关窗口命中（现状中心 = B_display − 偏移）。</param>
+    /// <param name="scheduleHit">课表窗口命中（中心 = 标称边界，与偏移无关）。</param>
+    /// <param name="verdict">复核结论。</param>
+    /// <param name="note">中文说明（供日志）。</param>
+    /// <returns><see cref="WindowVerdict.SwitchOnly"/>/<see cref="WindowVerdict.Agree"/>/<see cref="WindowVerdict.PreferSwitch"/>
+    /// 返回应采用的开关窗口命中；其余结论返回 null（无测量）。</returns>
+    public static OnsetHit? Reconcile(
+        OnsetHit? switchHit,
+        OnsetHit? scheduleHit,
+        out WindowVerdict verdict,
+        out string note)
+    {
+        if (switchHit == null && scheduleHit == null)
+        {
+            verdict = WindowVerdict.None;
+            note = "两窗口均无合格起响沿";
+            return null;
+        }
+
+        if (switchHit == null)
+        {
+            verdict = WindowVerdict.ScheduleOnly;
+            note = $"仅课表窗口命中（峰值 {ToDb(scheduleHit!.Value.PeakRms):F1} dBFS）——只作旁证，不作测量源";
+            return null;
+        }
+
+        if (scheduleHit == null)
+        {
+            verdict = WindowVerdict.SwitchOnly;
+            note = "仅开关窗口命中（课表窗口无合格起响沿）→ 采用开关窗口";
+            return switchHit;
+        }
+
+        var switchOnset = switchHit.Value.OnsetUtc;
+        var scheduleOnset = scheduleHit.Value.OnsetUtc;
+        var deltaSeconds = (switchOnset - scheduleOnset).TotalSeconds;
+        var switchDb = ToDb(switchHit.Value.PeakRms);
+        var scheduleDb = ToDb(scheduleHit.Value.PeakRms);
+        var gapDb = switchDb - scheduleDb;
+
+        if (Math.Abs(deltaSeconds) <= AgreeSeconds)
+        {
+            verdict = WindowVerdict.Agree;
+            note = $"两窗口一致（Δt={deltaSeconds:+0.00;-0.00;0.00}s）→ 采用开关窗口命中";
+            return switchHit;
+        }
+
+        if (gapDb > DominanceDb)
+        {
+            verdict = WindowVerdict.PreferSwitch;
+            note = $"两窗口相差 {Math.Abs(deltaSeconds):F2}s，开关窗口强 {gapDb:F1} dB（＞{DominanceDb:F1} dB）" +
+                   "→ 采用开关窗口命中（判定铃确实远离课表边界）";
+            return switchHit;
+        }
+
+        verdict = WindowVerdict.Conflict;
+        note = $"两窗口相差 {Math.Abs(deltaSeconds):F2}s，而开关窗口并未强出 {DominanceDb:F1} dB" +
+               $"（开关 {switchDb:F1} / 课表 {scheduleDb:F1} dBFS，差 {gapDb:F1} dB）" +
+               "→ 判定冲突：本次不写入、不落样本，请人工确认铃况";
+        return null;
     }
 
     private static double ToDb(double linear) => 20 * Math.Log10(Math.Max(linear, 1e-12));

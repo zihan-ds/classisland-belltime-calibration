@@ -218,7 +218,8 @@ public class CalibrationScheduler : IDisposable
             var windowEnd = boundaryDisplay.Add(
                 TimeSpan.FromSeconds(BellTimeCalibrationPlugin.Config.WindowSeconds));
 
-            // 忽略列表（默认 08:00 / 18:30：这两次铃声音色与已采集样本不一致、检测不到有效样本）：
+            // 忽略列表（设置项 `IgnoredBoundaries`，**默认为空** = 每个边界都监听，v1.0.3.1；
+            // 早先版本默认屏蔽 08:00/18:30，那是本校实测结论，不该当作所有使用者的默认值）：
             // 仍置 armed 以免每 tick 重复判定；不暂存边界信息 → 不会触发 BoundaryReached、不会开麦、不会校准。
             if (BellTimeCalibrationPlugin.Config.IsBoundaryIgnored(boundaryDisplay))
             {

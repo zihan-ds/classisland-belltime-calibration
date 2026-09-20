@@ -33,23 +33,29 @@ public class BellTimeCalibrationPlugin : PluginBase
     /// <summary>校准执行器实例（监听窗口内开麦检测响铃；由插件字段持有防止被 GC）。</summary>
     private CalibrationRunner? _runner;
 
-    /// <summary>提醒发送通道（v1.0.2）：宿主提醒主机服务的公开实例 + 反射调用其 internal 发送方法。</summary>
+    /// <summary>提醒发送通道（v1.0.3）：宿主提醒主机服务的公开实例 + 反射调用其 internal 发送方法。</summary>
     private HostNotificationSender? _notificationSender;
 
     /// <summary>
-    /// 大误差人工复核提醒门面（v1.0.2）：设置页的「发送测试提醒」按钮通过它发测试提醒，
+    /// 大误差人工复核提醒门面（v1.0.3）：设置页的「发送测试提醒」按钮通过它发测试提醒，
     /// 因此这里对外暴露（未初始化时为 null）。
     /// </summary>
     public static BellReviewNotifier? ReviewNotifier { get; private set; }
 
     /// <summary>
-    /// 偏移写入通道（v1.0.2）：设置页「手动拟合并应用」按钮复用它把拟合结果写入
+    /// 偏移写入通道（v1.0.3）：设置页「手动拟合并应用」按钮复用它把拟合结果写入
     /// 「应用设置 → 时钟 → 时间偏移」（唯一写入通道，已带可用性判定与旧值日志；未初始化时为 null）。
     /// </summary>
     public static SettingsOffsetApplier? OffsetApplier { get; private set; }
 
-    /// <summary>校准执行器（v1.0.2）：手动拟合写入后经它把当天样本重新装进运行时估计器。</summary>
+    /// <summary>校准执行器（v1.0.3）：手动拟合写入后经它把当天样本重新装进运行时估计器。</summary>
     public static CalibrationRunner? Runner { get; private set; }
+
+    /// <summary>
+    /// 时钟自检（v1.0.3 诊断）：周期性比对「宿主内核显示时钟」与「系统墙钟」，
+    /// 用于验证偏移换算的前提（内核时钟是否等于墙钟 + 偏移）。只读、只写日志。
+    /// </summary>
+    private ClockDiagnostic? _clockDiagnostic;
 
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
@@ -59,7 +65,7 @@ public class BellTimeCalibrationPlugin : PluginBase
         // 0.1 初始化结构化校准历史（与人类日志同目录，JSONL；供离线调参分析）
         CalibrationHistory.Initialize(PluginConfigFolder);
 
-        // 0.2 初始化偏移样本存储（v1.0.2）：样本按天落盘，进程重启后恢复当天序列
+        // 0.2 初始化偏移样本存储（v1.0.1）：样本按天落盘，进程重启后恢复当天序列
         OffsetSampleStore.Initialize(PluginConfigFolder);
 
         Logger.Info("BellTimeCalibration 插件初始化完成");
@@ -78,10 +84,22 @@ public class BellTimeCalibrationPlugin : PluginBase
             Config = ConfigureFileHelper.LoadConfig<BellCalibrationSettings>(_configPath) ?? new BellCalibrationSettings();
         }
 
-        Config.PropertyChanged += (_, _) => Save();
+        Config.PropertyChanged += (_, e) =>
+        {
+            Save();
+
+            // 死区改了就同步给样本存储（v1.0.3 增补）：样本页的「判据位置/默认勾选」与手动拟合都读这个静态，
+            // 只在启动时写一次会让它们在用户改完设置后仍按旧阈值分类（实测 2026-09-20 20:12 改死区后仍旧值）。
+            if (e.PropertyName == nameof(BellCalibrationSettings.DeadZoneSeconds))
+                OffsetSampleStore.DeadZoneSeconds = Config.DeadZoneSeconds;
+        };
 
         // 1.1 加载铃声模板（v0.9.0）：长录音样本 → 模板；失败仅告警，选铃回退启发式
         TemplateLibrary.Reload(PluginConfigFolder, Config);
+
+        // 1.2 把死区交给样本存储（v1.0.3）：样本管理用它区分「死区带内没写」与「大误差拒写」，
+        // 前者默认参与手动拟合。放在配置加载之后，保证拿到的是用户设置值。
+        OffsetSampleStore.DeadZoneSeconds = Config.DeadZoneSeconds;
 
         // 2. 注册设置页
         services.AddSettingsPage<BellCalibrationSettingsPage>();
@@ -114,7 +132,7 @@ public class BellTimeCalibrationPlugin : PluginBase
             // （IProfileService 不再被插件解析/使用。）
             var offsetApplier = new SettingsOffsetApplier(exactTimeService);
 
-            // v1.0.2 大误差人工复核提醒：走宿主提醒主机服务的公开实例 + 反射调用其 internal 发送方法
+            // v1.0.3 大误差人工复核提醒：走宿主提醒主机服务的公开实例 + 反射调用其 internal 发送方法
             // （公开基类 NotificationProviderBase 在本机内核 2.1.0.1 上实测不可用，详见 HostNotificationSender 注释）。
             // 取不到服务时提醒能力缺席，校准照常 —— 提醒是附加能力，绝不阻塞主链路。
             try
@@ -142,7 +160,7 @@ public class BellTimeCalibrationPlugin : PluginBase
             _runner = new CalibrationRunner(_scheduler, offsetApplier, reviewNotifier);
             Runner = _runner;
             Logger.Info(
-                "[校时] 校准执行器已就绪（v1.0.2：起响沿闸门 + 中位数估计 + 大误差人工复核提醒" +
+                "[校时] 校准执行器已就绪（v1.0.3：起响沿闸门 + 中位数估计 + 大误差人工复核提醒" +
                 "（音频样本由用户提供），原版内核可用，不改课表）。");
             Logger.Info(reviewNotifier.IsAvailable
                 ? "[校时] 大误差人工复核提醒已接线：拒写时会在 ClassIsland 界面弹出提醒" +
@@ -150,6 +168,16 @@ public class BellTimeCalibrationPlugin : PluginBase
                 : "[校时] 大误差人工复核提醒不可用：未取到提醒提供方实例，大误差将只记日志。");
             Logger.Info($"[校时] 手动拟合通道就绪：设置页「手动拟合并应用」把当天有效样本的拟合结果直接写入偏移"
                         + $"（Applier 可用={offsetApplier.IsAvailable}）。");
+
+            // v1.0.3 诊断（默认关闭）：内核时钟自检。偏移换算的前提是「内核时钟 = 墙钟 + 偏移」，
+            // 该前提已用本自检验证成立（误差 0 ms）；平时不跑，避免长期刷日志，只有显式开启才采样。
+            if (Config.DebugClockDiagnostic)
+            {
+                _clockDiagnostic = new ClockDiagnostic(exactTimeService, () => offsetApplier.CurrentOffsetSeconds ?? 0);
+                _clockDiagnostic.Start();
+                _clockDiagnostic.Sample("启动");
+                Logger.Info("[校时] 内核时钟自检已启动（每 5 秒采样一次，每 60 秒落一行日志）。");
+            }
         }
         catch (Exception ex)
         {

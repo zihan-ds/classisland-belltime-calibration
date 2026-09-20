@@ -28,6 +28,9 @@
     <Compile Include="..\..\Services\BellReviewDecision.cs" />
     <Compile Include="..\..\Services\OffsetSampleStore.cs" />
     <Compile Include="..\..\Services\ManualFitService.cs" />
+    <!-- 退化口径换算（CorrectionPolicy.RequiredFromAbsolute）同样是纯函数，可离线断言
+         （absolute-required-test 子命令直接断言生产代码本身，而不是另抄一份公式）。 -->
+    <Compile Include="..\..\Services\CorrectionPolicy.cs" />
   </ItemGroup>
 
 </Project>
