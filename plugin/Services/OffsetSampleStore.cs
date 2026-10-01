@@ -13,8 +13,8 @@ namespace BellTimeCalibration.Services;
 /// 它与 <see cref="InDeadZone"/> 一起决定界面上的**默认勾选状态**，不直接决定能否参与拟合。</description></item>
 /// <item><description><see cref="InDeadZone"/>：本次测量落在死区带内（|所需偏移 − 当时偏移| ≤ 死区），
 /// 判据因此没动偏移。**这类测量同样是干净测量**，只是当时"已经够准所以不写"，
-/// 所以默认也参与手动拟合（v1.0.3 增补，用户要求）。</description></item>
-/// <item><description><see cref="UserValid"/>：**是否参与手动拟合**（v1.0.3 增补，人工可改）。
+/// 所以默认也参与手动拟合（v1.0.4 增补，用户要求）。</description></item>
+/// <item><description><see cref="UserValid"/>：**是否参与手动拟合**（v1.0.4 增补，人工可改）。
 /// 默认 = <see cref="Applied"/> 或 <see cref="InDeadZone"/>；设置页「样本管理」里可逐条改，
 /// 人工结论优先。落盘在旁挂文件 <c>sample-exclusions.jsonl</c>（只记「与默认不同」的那些），
 /// 不重写测量流水。</description></item>
@@ -78,6 +78,29 @@ public static class OffsetSampleStore
 
     /// <summary>当前样本文件路径（未初始化时为 null）。</summary>
     public static string? Path => _path;
+
+    /// <summary>
+    /// 当天样本的紧凑摘要（v1.0.4：日志瘦身）。原先「载入当天样本 N 个（参与…；跳过其它日期 81 个）」
+    /// 这类说明每窗口/每次打开设置页都往日志里写一遍，一行 130+ 字；改成这个短格式，并由调用方去重。
+    /// </summary>
+    public static string Summarize(IReadOnlyList<OffsetSample> samples)
+    {
+        int eligible = 0, deadZone = 0, rejected = 0, overridden = 0;
+        foreach (var s in samples)
+        {
+            if (s.IsEligible)
+                eligible++;
+            if (s.InDeadZone)
+                deadZone++;
+            else if (!s.Applied)
+                rejected++;
+            if (s.UserValid != (s.Applied || s.InDeadZone))
+                overridden++;
+        }
+
+        return $"当天 {samples.Count}（参与 {eligible}｜死区 {deadZone}｜拒写 {rejected}" +
+               (overridden > 0 ? $"｜人工 {overridden}" : "") + "）";
+    }
 
     /// <summary>人工复核结论文件路径（未初始化时为 null）。</summary>
     public static string? ExclusionsPath => _exclusionsPath;

@@ -1,7 +1,10 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using Avalonia.Threading;
+using BellTimeCalibration.Settings;
 using ClassIsland.Core.Abstractions.Services;
+using ClassIsland.Core.Controls;
 using ClassIsland.Core.Models.Notification;
 using ClassIsland.Shared.Interfaces;
 using ClassIsland.Shared.Models.Notification;
@@ -23,7 +26,7 @@ public static class BellReviewNotificationIds
 }
 
 /// <summary>
-/// 把一条提醒交给宿主的发送通道（v1.0.3）。
+/// 把一条提醒交给宿主的发送通道（v1.0.4）。
 ///
 /// 背景（实测结论，务必保留）：宿主 <see cref="INotificationHostService"/> 的
 /// <c>ShowNotification(request, providerGuid, channelGuid, pushNotifications, isPlayed)</c> 是 internal，
@@ -70,17 +73,19 @@ public sealed class HostNotificationSender
 
         // 登记进宿主提醒提供方表：出现在「设置 → 提醒」，并会被写进 Settings.json 的
         // NotificationProvidersPriority（提醒调度按该列表排序，缺失也能显示，但登记后才可被用户单独关闭）。
+        // v1.0.4 日志瘦身：成功路径不再单独打两行（登记 + 通道就绪），失败仍打。
+        var registered = false;
         try
         {
             _host.RegisterNotificationProvider(new BellTimeCalibrationProviderRegistration());
-            log("[校时] 已登记提醒提供方「铃声校时复核」（设置 → 提醒 中可单独开关）。");
+            registered = true;
         }
         catch (Exception ex)
         {
             log($"[校时] 登记提醒提供方失败（提醒仍可发送，但设置页里不会出现开关）：{ex.Message}");
         }
 
-        log($"[校时] 提醒发送通道已就绪（反射调用 {_showMethod.DeclaringType?.FullName}.ShowNotification）。");
+        log($"[校时] 提醒通道就绪（{(registered ? "已登记提供方" : "未登记提供方")}；反射调用 {_showMethod.DeclaringType?.Name}.ShowNotification）");
     }
 
     /// <summary>
@@ -109,24 +114,59 @@ public sealed class HostNotificationSender
 
     /// <summary>
     /// 最小可用的提醒提供方实现：只为让本插件出现在宿主的提醒提供方表里（可被单独开关）。
-    /// 真正的发送不经过它（见类注释），因此这里只提供名称、GUID 与空设置占位。
+    /// 真正的发送不经过它（见类注释），因此这里只提供名称、GUID、图标与设置控件。
     /// </summary>
     private sealed class BellTimeCalibrationProviderRegistration : INotificationProvider
     {
         public string Name { get; set; } = "铃声校时复核";
 
-        public string Description { get; set; } = "校铃校时出现大误差时，提醒人工复核。";
+        public string Description { get; set; } = "校铃校时发现大误差或两次测量矛盾时，提醒人工复核。";
 
         public Guid ProviderGuid { get; set; } = BellReviewNotificationIds.ProviderGuid;
 
-        public object? SettingsElement { get; set; }
+        /// <summary>
+        /// 「设置 → 提醒 → 铃声校时复核 → 基本设置」的内容：人工审核提醒开关 + 发送测试提醒按钮。
+        /// 与插件设置页里那两个是同一份配置，不存在第二套设置。创建失败时为 null（宿主显示「没有设置」），
+        /// 但绝不因此让提供方登记失败。
+        /// </summary>
+        public object? SettingsElement { get; set; } = CreateSettingsElement();
 
-        public object? IconElement { get; set; }
+        /// <summary>「设置 → 提醒」列表里这张卡片的图标（与提醒本身用的 Fluent 字形一致）。</summary>
+        public object? IconElement { get; set; } = new FluentIcon
+        {
+            Glyph = "\uE7BA",
+            Width = 24,
+            Height = 24,
+            FontSize = 24
+        };
+
+        /// <summary>
+        /// 创建设置控件。控件必须在 UI 线程创建：本类由 <c>AppStarted</c> 里的
+        /// <see cref="HostNotificationSender"/> 构造（那一刻就是 UI 线程）。万一不是，宁可不给设置控件。
+        /// </summary>
+        private static object? CreateSettingsElement()
+        {
+            try
+            {
+                if (!Dispatcher.UIThread.CheckAccess())
+                {
+                    Logger.Warn("[校时] 提醒提供方设置控件未在 UI 线程创建，已跳过（「设置 → 提醒」里会显示“没有设置”）。");
+                    return null;
+                }
+
+                return new BellReviewProviderSettingsControl();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"[校时] 创建提醒提供方设置控件失败（不影响提醒本身）：{ex.Message}");
+                return null;
+            }
+        }
     }
 }
 
 /// <summary>
-/// 大误差人工复核提醒的门面（v1.0.3）：把「要提醒什么」翻译成一条 ClassIsland 提醒，
+/// 大误差人工复核提醒的门面（v1.0.4）：把「要提醒什么」翻译成一条 ClassIsland 提醒，
 /// 把「要不要弹」交给纯函数 <see cref="NotificationReviewDecision"/> 判定（判定单独成文件，
 /// 便于离线断言；本文件才有宿主依赖）。
 ///
@@ -220,7 +260,9 @@ public sealed class BellReviewNotifier
             if (!_sender.Send(request, m => Logger.Warn(m)))
                 return false;
 
-            Logger.Warn($"[校时] 人工复核提醒：已弹出（{why}）。{text}");
+            // v1.0.4 日志瘦身：只留一行短摘要（提醒正文本身已经把细节告诉用户，日志里不必再回抄一遍）。
+            Logger.Warn($"[校时] 提醒 大误差 {args.ChangeSeconds:+0.000;-0.000;0.000}s" +
+                        $"（{args.CurrentOffsetSeconds:F3}→{args.RequiredOffsetSeconds:F3}）；{why}");
             return true;
         }
         catch (Exception ex)
@@ -232,7 +274,7 @@ public sealed class BellReviewNotifier
     }
 
     /// <summary>
-    /// 双窗口冲突提醒（v1.0.3）：开关窗口与课表窗口都测到合格起响沿、位置却不一致，且开关窗口并不明显更强，
+    /// 双窗口冲突提醒（v1.0.4）：开关窗口与课表窗口都测到合格起响沿、位置却不一致，且开关窗口并不明显更强，
     /// 于是本次**拒绝写入**（那点「小修正」其实是杂音的坐标）。
     ///
     /// 为什么不只写日志：被静默拦下的偏差，用户根本不知道要去看日志 —— 与大误差拒写同理，这条路径必须有出口。
@@ -279,7 +321,9 @@ public sealed class BellReviewNotifier
             if (!_sender.Send(request, m => Logger.Warn(m)))
                 return false;
 
-            Logger.Warn($"[校时] 双窗口冲突提醒：已弹出。{text}");
+            Logger.Warn($"[校时] 提醒 双窗口冲突（{args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}）" +
+                        $" 开 {args.SwitchOnsetLocal:HH:mm:ss.fff}/{args.SwitchPeakDb:F1}dB" +
+                        $" 表 {args.ScheduleOnsetLocal:HH:mm:ss.fff}/{args.SchedulePeakDb:F1}dB");
             return true;
         }
         catch (Exception ex)

@@ -73,7 +73,8 @@ public sealed class SettingsOffsetApplier : IOffsetApplier
                 StatusMessage =
                     "已解析到设置项 Settings.TimeOffsetSeconds（应用设置 → 时钟 → 时间偏移）。" +
                     $"当前值 {CurrentOffsetSeconds:F3} 秒。";
-                Logger.Info($"[校时] {Name} 可用：{StatusMessage}");
+                // v1.0.4：可用时不再单独打一行（启动横幅里已有一句「偏移通道 …（当前 …s）」），
+                // 这里只保留状态串供横幅与设置页使用；不可用时仍打 WARN。
             }
             else
             {

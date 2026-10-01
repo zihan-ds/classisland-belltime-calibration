@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
@@ -27,6 +28,25 @@ public static class Logger
     }
 
     public static void Info(string message) => Write("INFO", message);
+
+    /// <summary>
+    /// 只在内容与上一次（同一 <paramref name="key"/>）不同时才写 INFO（v1.0.4：日志瘦身）。
+    /// 用于「每窗口 / 每次打开设置页都会打、但内容经常一字不差」的摘要行（样本恢复、样本管理载入）。
+    /// 只对 INFO 去重：WARN/ERROR 一律照打，免得把真正重复的异常吞掉。
+    /// </summary>
+    public static void InfoIfChanged(string key, string message)
+    {
+        lock (LastByKey)
+        {
+            if (LastByKey.TryGetValue(key, out var last) && last == message)
+                return;
+            LastByKey[key] = message;
+        }
+
+        Write("INFO", message);
+    }
+
+    private static readonly Dictionary<string, string> LastByKey = new();
 
     public static void Error(string message) => Write("ERROR", message);
 

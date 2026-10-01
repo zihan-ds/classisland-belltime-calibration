@@ -32,7 +32,7 @@ public static class OnsetGate
     public const double RatioMin = 4.0;
 
     /// <summary>
-    /// 强候选组容差（dB，v1.0.3）：只在与窗内最强候选相差不超过该值的候选里，再按比值挑最终起响点。
+    /// 强候选组容差（dB，v1.0.4）：只在与窗内最强候选相差不超过该值的候选里，再按比值挑最终起响点。
     ///
     /// 为什么要加这道门（2026-09-18 实机 111 个 dump 的复盘）：
     /// 旧判据单看「起响比值最大」，而比值 = 起响后 0.5 s 峰值 RMS ÷ 起响前 0.3 s 基线 RMS —— 只要起响前那 0.3 s
@@ -65,10 +65,13 @@ public static class OnsetGate
     /// <param name="OnsetUtc">起响点墙钟（UTC）。</param>
     /// <param name="Ratio">起响比值（倍）。</param>
     /// <param name="Note">说明（中文，供日志）。</param>
-    /// <param name="AnchorWallLocal">本窗口音频锚点墙钟（本地）= 首个音频块的回调时刻（v1.0.3，供离线复算对齐）。</param>
-    /// <param name="GateFromSeconds">闸门区间起点在本窗口音频内的秒数（v1.0.3）。</param>
-    /// <param name="GateToSeconds">闸门区间终点在本窗口音频内的秒数（v1.0.3）。</param>
-    /// <param name="PeakRms">选中起响点后 0.5 s 的峰值 RMS（v1.0.3 增补；供「双窗口复核」比较两侧证据强弱）。</param>
+    /// <param name="AnchorWallLocal">本窗口音频锚点墙钟（本地）= 首个音频块的回调时刻（v1.0.4，供离线复算对齐）。</param>
+    /// <param name="GateFromSeconds">闸门区间起点在本窗口音频内的秒数（v1.0.4）。</param>
+    /// <param name="GateToSeconds">闸门区间终点在本窗口音频内的秒数（v1.0.4）。</param>
+    /// <param name="PeakRms">选中起响点后 0.5 s 的峰值 RMS（v1.0.4 增补；供「双窗口复核」比较两侧证据强弱）。</param>
+    /// <param name="CandidateCount">扫描到的候选数（v1.0.4：供人类日志按字段拼短摘要，不必回抄整段判据文本）。</param>
+    /// <param name="QualifiedCount">通过两道门槛的候选数（v1.0.4）。</param>
+    /// <param name="StrongCount">强候选组大小（v1.0.4）。</param>
     public readonly record struct OnsetHit(
         int OnsetSampleIndex,
         DateTime OnsetUtc,
@@ -77,7 +80,10 @@ public static class OnsetGate
         DateTime AnchorWallLocal = default,
         double GateFromSeconds = 0,
         double GateToSeconds = 0,
-        double PeakRms = 0);
+        double PeakRms = 0,
+        int CandidateCount = 0,
+        int QualifiedCount = 0,
+        int StrongCount = 0);
 
     /// <summary>
     /// 在「边界 ±<see cref="GateSeconds"/> 秒」内找起响比值最大的位置。
@@ -127,7 +133,7 @@ public static class OnsetGate
         var scanBest = 0.0;
         var scanPeakMax = 0.0;
 
-        // ── 两趟扫描（v1.0.3）──
+        // ── 两趟扫描（v1.0.4）──
         // 第一趟只收集候选：每个候选的基线/峰值仍由前缀和 O(1) 递推，性能与旧实现相同。
         var candidates = new List<(int Idx, double Ratio, double Peak)>();
         var silentBaselineCandidates = 0;   // 基线落在数字静默里的候选数（诊断用）
@@ -140,7 +146,7 @@ public static class OnsetGate
             var baseline = Rms(baseFrom, idx);
             var peak = Rms(idx, Math.Min(audio.Length, idx + peakSamples));
 
-            // ── 基线有效性门槛（v1.0.3）──
+            // ── 基线有效性门槛（v1.0.4）──
             // 比值 = 峰值 ÷ 基线；基线若是**数字静默**（麦克风整段未进音后恢复供音），除数≈0，
             // 比值会炸成千万级，把「麦克风恢复出声的那一瞬间」选成铃声。
             // 实机证据（2026-09-19 上午）：8 个窗口各含 10~21 s 全零静默，闸门报出
@@ -206,13 +212,11 @@ public static class OnsetGate
 
         if (bestIdx < 0 || bestRatio < RatioMin)
         {
-            // 基线静默占比高时把原因说清楚：这类窗口的「没命中」不是判据太严，而是**传感器没进音**，
-            // 使用者该去查设备/权限，而不是去调阈值（2026-09-19 上午整段如此）。
-            var silentNote = silentBaselineCandidates > 0
-                ? $"；其中 {silentBaselineCandidates} 个候选的起响前 0.3s 落在数字静默里（比值不可信，已排除——多为麦克风未进音）"
-                : "";
-            note = $"边界 ±{GateSeconds:F1}s 内无合格起响沿（最佳起响比值 {scanBest:F1}×，下限 {RatioMin:F1}×" +
-                   $"；该区间峰值 {ToDb(scanPeakMax):F1} dBFS）{silentNote}";
+            // v1.0.4：未命中说明改为**紧凑串**（原先一次 130+ 字，逐窗口写进日志很占地方）。
+            // 但「基线静默候选」这个关键词必须保留：gate-guard 断言就靠它统计被门槛拦下的窗口。
+            // 命中时的说明（下面那段）保持完整——它同时是结构化历史 GateNote 的内容。
+            note = $"未命中（最佳比值 {scanBest:F1}×／下限 {RatioMin:F1}×，区间峰值 {ToDb(scanPeakMax):F1} dBFS" +
+                   (silentBaselineCandidates > 0 ? $"，已排除 {silentBaselineCandidates} 个基线静默候选" : "") + "）";
             return null;
         }
 
@@ -226,7 +230,7 @@ public static class OnsetGate
         var onsetLocal = onsetUtc.Value.ToLocalTime();
         var offsetSec = (onsetLocal - boundaryWallLocal).TotalSeconds;
 
-        // 候选摘要（v1.0.3）：把「最强候选是谁、强候选组多大、最终选了谁」一并写进日志。
+        // 候选摘要（v1.0.4）：把「最强候选是谁、强候选组多大、最终选了谁」一并写进日志。
         // 必要性：dump 文件名用的是布防时刻，而本函数用的是音频锚点（首个块回调时刻），两者实测能差 1~3 s；
         // 没有这行摘要，离线复算的位置与实机判据对不上（这次排查为此反复得出相反结论）。
         var anchorLocal = audio.AnchorWallLocal;
@@ -245,16 +249,19 @@ public static class OnsetGate
             anchorLocal,
             gateFrom / (double)rate,
             gateTo / (double)rate,
-            PeakRms: bestPeak);
+            PeakRms: bestPeak,
+            CandidateCount: candidates.Count,
+            QualifiedCount: qualified.Count,
+            StrongCount: strongCount);
     }
 
     /// <summary>
-    /// 双窗口复核的一致性容差（秒，v1.0.3）：两侧命中位置相差不超过该值即视为「同一次起响」。
+    /// 双窗口复核的一致性容差（秒，v1.0.4）：两侧命中位置相差不超过该值即视为「同一次起响」。
     /// 两侧扫描用的是同一套判据与步长（10 ms），只是窗口中心不同，因此同一次起响通常落在同一格。
     /// </summary>
     public const double AgreeSeconds = 1.0;
 
-    /// <summary>双窗口复核结论（v1.0.3）。</summary>
+    /// <summary>双窗口复核结论（v1.0.4）。</summary>
     public enum WindowVerdict
     {
         /// <summary>两个窗口都没有合格起响沿。</summary>
@@ -277,7 +284,7 @@ public static class OnsetGate
     }
 
     /// <summary>
-    /// 双窗口复核（v1.0.3）：把「开关窗口」的命中与「课表窗口」的命中放在一起裁决。
+    /// 双窗口复核（v1.0.4）：把「开关窗口」的命中与「课表窗口」的命中放在一起裁决。
     ///
     /// 为什么需要（2026-09-20 上午实机 4 个下课窗口 + 录音复算）：
     /// 闸门窗口的中心是 <c>B_display − 偏移</c>，也就是**内核真正切换的位置**，而它本身正是要被校准的量。

@@ -24,7 +24,7 @@ public sealed record ManualFitResult(
     string Note);
 
 /// <summary>
-/// 手动拟合（v1.0.3，设置页「手动拟合并应用」按钮背后的纯逻辑）。
+/// 手动拟合（v1.0.4，设置页「手动拟合并应用」按钮背后的纯逻辑）。
 ///
 /// 做什么：读当天已落盘的样本 → 只保留**有效样本** → 用与运行时**完全相同**的估计器
 /// （<see cref="DriftFitter"/>：近 <see cref="DriftFitter.WindowHours"/> 小时中位数，
