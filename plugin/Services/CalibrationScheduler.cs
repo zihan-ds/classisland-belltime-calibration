@@ -218,7 +218,7 @@ public class CalibrationScheduler : IDisposable
             var windowEnd = boundaryDisplay.Add(
                 TimeSpan.FromSeconds(BellTimeCalibrationPlugin.Config.WindowSeconds));
 
-            // 忽略列表（设置项 `IgnoredBoundaries`，**默认为空** = 每个边界都监听，v1.0.3.1；
+            // 忽略列表（设置项 `IgnoredBoundaries`，**默认为空** = 每个边界都监听，v1.0.4；
             // 早先版本默认屏蔽 08:00/18:30，那是本校实测结论，不该当作所有使用者的默认值）：
             // 仍置 armed 以免每 tick 重复判定；不暂存边界信息 → 不会触发 BoundaryReached、不会开麦、不会校准。
             if (BellTimeCalibrationPlugin.Config.IsBoundaryIgnored(boundaryDisplay))
@@ -233,10 +233,10 @@ public class CalibrationScheduler : IDisposable
             _pendingBoundaryKind = boundaryKind;
             _pendingBoundaryDisplay = boundaryDisplay;
 
+            // v1.0.4 日志瘦身：只在日志里留「哪种边界、哪个时刻、还剩多久」，窗口区间（由配置推出）不再回抄。
             Logger.Info(
-                $"[校时] 进入监听窗口：边界类型={boundaryKind}，" +
-                $"B_display={boundaryDisplay:HH:mm:ss.fff}，剩余={remaining.TotalSeconds:F1}秒，" +
-                $"窗口=[{windowStart:HH:mm:ss.fff} ~ {windowEnd:HH:mm:ss.fff}]。");
+                $"[校时] 窗口 {boundaryKind} B={boundaryDisplay:HH:mm:ss} 剩余{remaining.TotalSeconds:F1}s" +
+                $"（{windowStart:HH:mm:ss}~{windowEnd:HH:mm:ss}）");
 
             // 对外发布事件（M3 起响铃识别模块订阅后开始实际监听）
             BoundaryApproaching?.Invoke(this, new BoundaryApproachingEventArgs(

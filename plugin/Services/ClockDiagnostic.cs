@@ -5,7 +5,7 @@ using ClassIsland.Core.Abstractions.Services;
 namespace BellTimeCalibration.Services;
 
 /// <summary>
-/// 内核时钟自检（v1.0.3 诊断）：周期性比对「宿主内核显示时钟」与「系统墙钟」，并把
+/// 内核时钟自检（v1.0.4 诊断）：周期性比对「宿主内核显示时钟」与「系统墙钟」，并把
 /// 「内核时钟自身滞后 L = (内核 − 墙钟) + 当前偏移」打出来。
 ///
 /// 背景：本插件把 <c>e = t_ring（音频墙钟）− t_switch（BoundaryReached 墙钟）</c> 当作两个真值之差，

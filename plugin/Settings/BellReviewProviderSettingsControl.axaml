@@ -1,0 +1,46 @@
+<UserControl x:Class="BellTimeCalibration.Settings.BellReviewProviderSettingsControl"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="520" d:DesignHeight="220">
+  <!--
+    「设置 → 提醒 → 铃声校时复核 → 基本设置」里显示的内容。
+    刻意不用任何自定义主题画刷：这里由宿主的设置页承载，跟随宿主主题即可（浅色/深色都可读）。
+    开关与插件设置页里的那个是同一份配置（BellTimeCalibrationPlugin.Config）。
+  -->
+  <ScrollViewer>
+    <StackPanel Spacing="14" Margin="0 4 0 8" MaxWidth="720" HorizontalAlignment="Left">
+
+      <StackPanel Spacing="4">
+        <TextBlock Text="铃声校时复核" FontSize="15" FontWeight="Bold"/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.75"
+                   Text="本插件在校铃校时发现「较大误差」或「两次测量互相矛盾」时会拒绝写入偏移，并在这里弹提醒请你人工确认铃况。"/>
+      </StackPanel>
+
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Spacing="2">
+          <TextBlock Text="人工审核提醒（拒写时弹窗）" FontSize="13"/>
+          <TextBlock TextWrapping="Wrap" FontSize="11" Opacity="0.75"
+                     Text="关闭后仍然拒绝写入（拒写是数据安全底线），只是不再弹提醒、只记日志。没有冷却：同一个问题每次都提醒。"/>
+        </StackPanel>
+        <CheckBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0"
+                  x:Name="ReviewEnabledToggle"/>
+      </Grid>
+
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Spacing="2">
+          <TextBlock Text="发送测试提醒" FontSize="13"/>
+          <TextBlock TextWrapping="Wrap" FontSize="11" Opacity="0.75"
+                     Text="大误差是低频事件，可能几天才出现一次。用这个按钮随时确认提醒通道真的能弹出来（不受上面的开关与阈值约束）。"/>
+        </StackPanel>
+        <Button Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0"
+                Content="发送测试提醒" Click="OnTestReviewNotification"/>
+      </Grid>
+
+      <TextBlock x:Name="TestResultText" FontSize="11" Opacity="0.75"
+                 TextWrapping="Wrap" IsVisible="False"/>
+
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

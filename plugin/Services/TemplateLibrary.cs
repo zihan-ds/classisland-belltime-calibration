@@ -76,7 +76,10 @@ public static class TemplateLibrary
             }
         }
 
-        foreach (var n in notes)
+        // v1.0.4 日志瘦身：每个模板一行（「模板：模板 上课铃 ← 上课铃.wav（48000Hz/1ch/16bit → 48kHz 单声道，2.50s）」）
+        // 合并成一行汇总；跳过/失败这类异常说明仍逐条打（上面 notes 里除正常加载外的条目）。
+        var abnormal = notes.Where(n => !n.StartsWith("模板 ", StringComparison.Ordinal)).ToList();
+        foreach (var n in abnormal)
             Logger.Info($"[校时] 模板：{n}");
 
         StatusMessage = Loaded.Count > 0
@@ -84,7 +87,7 @@ public static class TemplateLibrary
             : "未加载到任何模板（未配置样本路径，且模板目录内没有可用的 WAV）→ 选铃回退启发式。";
 
         if (Loaded.Count > 0)
-            Logger.Info($"[校时] {StatusMessage}");
+            Logger.Info($"[校时] 模板 {string.Join("、", Loaded.ConvertAll(t => $"{t.Label}{t.DurationSeconds:F2}s"))}");
         else
             Logger.Warn($"[校时] {StatusMessage}");
     }

@@ -30,12 +30,11 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         // 属性 setter 触发 PropertyChanged → Plugin 订阅后自动保存。
         DataContext = BellTimeCalibrationPlugin.Config;
 
-        LogThemeDiagnostics("设置页首次加载");
         ReloadSampleList();
     }
 
     /// <summary>
-    /// 样本管理的一行（v1.0.3 增补）。只做三件事：把样本字段转成界面文本、
+    /// 样本管理的一行（v1.0.4 增补）。只做三件事：把样本字段转成界面文本、
     /// 承载「有效」勾选框、把勾选结果写回存储。不含任何判定逻辑。
     /// </summary>
     private sealed class DaySampleRow : System.ComponentModel.INotifyPropertyChanged
@@ -119,19 +118,22 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
                 empty.IsVisible = rows.Count == 0;
 
             var summary = this.FindControl<TextBlock>("SampleSummaryText");
+            var eligible = today.Count(s => s.IsEligible);
+            var overridden = today.Count(s => s.UserValid != (s.Applied || s.InDeadZone));
+            var deadZoneOnes = today.Count(s => s.InDeadZone);
+            var rejected = today.Count(s => !s.Applied && !s.InDeadZone);
             if (summary != null)
             {
-                var eligible = today.Count(s => s.IsEligible);
-                var overridden = today.Count(s => s.UserValid != (s.Applied || s.InDeadZone));
-                var deadZoneOnes = today.Count(s => s.InDeadZone);
-                var rejected = today.Count(s => !s.Applied && !s.InDeadZone);
                 summary.Text = $"当天 {today.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
                                $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
                                $"{(rejected > 0 ? $"，大误差拒写 {rejected} 条默认不参与（可手动勾上）" : "")}" +
                                $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{note}";
             }
 
-            Logger.Info($"[校时] 样本管理：已载入当天样本 {today.Count} 条（{note}）。");
+            // v1.0.4 日志瘦身：原先每次打开/重新载入设置页都写一行 130+ 字的说明（一天 30+ 行）；
+            // 现在写短摘要，且内容未变就不重复写（界面上的详细说明不受影响）。
+            Logger.InfoIfChanged("sample-manage",
+                $"[校时] 样本管理 {OffsetSampleStore.Summarize(today)}");
         }
         catch (Exception ex)
         {
@@ -146,44 +148,6 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
     private void OnReloadSamples(object? sender, RoutedEventArgs e) => ReloadSampleList();
 
     /// <summary>
-    /// 主题诊断（一次性自检）：把当前主题变体与两个画刷实际解析到的颜色写进日志。
-    /// 目的：浅色模式的可读性只能靠人眼判断，但「资源到底有没有解析成功」可以机器判断 ——
-    /// 解析成功时颜色必是 Light/Dark 组里的四个值之一；若出现回退色，说明主题字典没生效，
-    /// 那时光看界面只会以为「颜色不对」，看日志能直接定位。主题切换时也会再记一次。
-    /// </summary>
-    private void LogThemeDiagnostics(string reason)
-    {
-        try
-        {
-            var variant = ActualThemeVariant;
-            var card = (this.FindResource("BellCardBackgroundBrush") as ISolidColorBrush)?.Color;
-            var hint = (this.FindResource("BellHintBrush") as ISolidColorBrush)?.Color;
-
-            var expected = new[]
-            {
-                Color.Parse("#0A000000"), Color.Parse("#C0000000"),   // Light
-                Color.Parse("#18FFFFFF"), Color.Parse("#AAFFFFFF"),   // Dark
-            };
-            var ok = card is { } c1 && hint is { } c2 && expected.Contains(c1) && expected.Contains(c2);
-
-            if (ok)
-            {
-                Logger.Info($"[校时] 设置页主题自检（{reason}）：主题={variant}，" +
-                            $"卡片底色={card}，提示文字={hint} → 主题资源解析正常。");
-            }
-            else
-            {
-                Logger.Warn($"[校时] 设置页主题自检（{reason}）：主题={variant}，" +
-                            $"卡片底色={card?.ToString() ?? "未解析"}，提示文字={hint?.ToString() ?? "未解析"}" +
-                            " → 未取到主题画刷（回退到默认前景色/透明底），浅色模式可读性可能受影响。");
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"[校时] 设置页主题自检失败（不影响功能）：{ex.Message}");
-        }
-    }
-
     /// <summary>
     /// 主题变体变化（浅色/深色切换）：让本页的 <c>DynamicResource</c> 颜色重新解析。
     ///
@@ -216,8 +180,6 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
             // 清空本地值只改属性、不保证立刻重画，这里补一次重绘
             InvalidateVisual();
-
-            LogThemeDiagnostics("主题变体切换");
         }
         catch (Exception ex)
         {
@@ -235,7 +197,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         => await PickSampleAsync(path => BellTimeCalibrationPlugin.Config.BreakBellSamplePath = path);
 
     /// <summary>
-    /// 手动拟合并应用（v1.0.3）：读当天有效样本重新分析一次，把结果直接写入
+    /// 手动拟合并应用（v1.0.4）：读当天有效样本重新分析一次，把结果直接写入
     /// 「应用设置 → 时钟 → 时间偏移」——**无视学习模式与自动应用开关**（这是一次显式的手动动作）。
     /// 全程不抛异常：任何一步失败都把原因写进结果文字与日志，绝不影响设置页交互。
     /// </summary>
@@ -263,7 +225,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
             var before = applier.CurrentOffsetSeconds;
 
-            // 幂等保护（v1.0.3）：实测一次点击会执行两遍（两次调用读到的「旧值」相同，说明是两份状态各跑了一次，
+            // 幂等保护（v1.0.4）：实测一次点击会执行两遍（两次调用读到的「旧值」相同，说明是两份状态各跑了一次，
             // 最可能是设置页实例被创建了两份）。写入前先比对：目标值已到位就不再写，
             // 避免重复写入与「由 X 改为 X」这种误导性结果文字。
             if (before != null && Math.Abs(before.Value - result.OffsetSeconds) < 0.0005)
@@ -303,7 +265,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
     }
 
     /// <summary>
-    /// 发送一条测试用的「大误差人工复核提醒」（v1.0.3）：让用户随时确认提醒通道真的能弹出来，
+    /// 发送一条测试用的「大误差人工复核提醒」（v1.0.4）：让用户随时确认提醒通道真的能弹出来，
     /// 而不必等下一次真实大误差（大误差是低频事件，可能几天才出现一次）。
     /// 阈值与「人工审核提醒」开关**都不参与**（这是一次显式的手动测试），因此直接走通知门面。
     /// </summary>

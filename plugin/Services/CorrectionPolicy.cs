@@ -20,7 +20,7 @@ namespace BellTimeCalibration.Services;
 public class CorrectionPolicy
 {
     /// <summary>
-    /// 未观测到切换时的绝对口径换算（v1.0.3）：把「相对当前开关的残差」还原为「所需绝对偏移」。
+    /// 未观测到切换时的绝对口径换算（v1.0.4）：把「相对当前开关的残差」还原为「所需绝对偏移」。
     ///
     /// <para>delta_abs 的定义是 <c>(B_display − 偏移) − 铃响</c> —— 它描述的是「当前开关还差多少才对齐」，
     /// 而不是「偏移该设成多少」。真正的绝对所需偏移是 <c>B_display − 铃响</c>，正好等于

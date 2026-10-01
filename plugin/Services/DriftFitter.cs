@@ -28,7 +28,7 @@ namespace BellTimeCalibration.Services;
 /// 三项同时成立时启用；斜率仍钳制在 ±<see cref="MaxSlopeSecondsPerHour"/>。
 /// 门槛的含义：只有噪声被平均到足以看出真实走时（残差 &lt;0.3 s）之后，才允许追趋势。</description></item>
 /// </list>
-/// 不做线程同步的说明已作废（v1.0.3）：手动拟合（设置页按钮）会在 UI 线程上
+/// 不做线程同步的说明已作废（v1.0.4）：手动拟合（设置页按钮）会在 UI 线程上
 /// <see cref="Seed"/> 一份新序列，而捕获线程可能正在 <see cref="Add"/>，
 /// 因此所有公开成员与 <see cref="Recompute"/> 都由 <see cref="_sync"/> 串行化 ——
 /// 「边采集边点按钮」绝不允许读出半更新的中间态。
@@ -69,7 +69,7 @@ public sealed class DriftFitter
     private readonly List<(DateTime At, double OffsetSec)> _samples = new();
 
     /// <summary>
-    /// 串行化所有样本读写（v1.0.3）：手动拟合走 UI 线程，校准走捕获线程，
+    /// 串行化所有样本读写（v1.0.4）：手动拟合走 UI 线程，校准走捕获线程，
     /// 两者可能同时碰到这份序列。锁只保护本类内部状态，不跨类调用，不会造成死锁。
     /// </summary>
     private readonly object _sync = new();

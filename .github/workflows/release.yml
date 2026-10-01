@@ -55,16 +55,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = '${{ github.ref_name }}'
+          # Release 正文 = 本版本的更新说明（去掉文件自身的 H1 标题，标题已是 Release 的 v$tag）；
+          # 末尾必须保留 CLASSISLAND_PKG_MD5 注释，插件市场索引依赖它。
           $md5Comment = (Get-Content plugin/cipx/checksums.md -Raw).Trim()
-          $lines = @(
-            "铃声自动校时（BellTime Calibration）v$tag",
-            "",
-            "监听校园广播铃声、自动校准 ClassIsland「应用设置 → 时钟 → 时间偏移」的 ClassIsland 2.x 插件。",
-            "下载附件 BellTimeCalibration.cipx 后拖入 ClassIsland「设置 → 插件」页面即可安装。",
-            "",
-            "本仓库不含任何录音，铃声样本需自行录制后导入，详见仓库 README。",
-            "",
-            $md5Comment
-          )
-          Set-Content -Path release-body.md -Value $lines -Encoding utf8NoBOM
+          # 说明文件按「三段版本号」命名（如 1.0.4），tag 是四段（1.0.4.0），故两者都要试。
+          $notes = @("更新说明-v$tag.md") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $notes) { $notes = "更新说明-v$($tag -replace '\.0$').md" }
+          if (-not (Test-Path $notes)) { throw "找不到 $tag 对应的更新说明文件（已试 更新说明-v$tag.md 与 $notes），Release 正文无法生成" }
+          # 该文件里另有 3 行以 '# ' 开头的内容位于 bash 代码块内，
+          # 所以只能丢掉第 1 行，不能用 /^# / 起头过滤（会在代码块处截断正文）。
+          $body = (Get-Content $notes -Encoding utf8 | Select-Object -Skip 1) + $md5Comment
+          Set-Content -Path release-body.md -Value $body -Encoding utf8NoBOM
           gh release create $tag plugin/cipx/BellTimeCalibration.cipx --title "v$tag" --notes-file release-body.md

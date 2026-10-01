@@ -287,7 +287,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="大误差复核提醒" FontSize="13"/>
-              <TextBlock Text="大误差拒写时会弹提醒要求人工复核（冷却 30 分钟，可在「设置 → 提醒 → 铃声校时复核」里关闭）。这里可先发一条测试提醒确认能正常弹出"
+              <TextBlock Text="大误差或两次测量冲突被拒写时会弹提醒要求人工复核（没有冷却；可在「设置 → 提醒 → 铃声校时复核」里单独开关或调整）。大误差是低频事件，这里可先发一条测试提醒确认能正常弹出"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <Button Grid.Column="1" VerticalAlignment="Center" Content="发送测试提醒" Click="OnTestReviewNotification"/>
