@@ -109,10 +109,12 @@ BellTimeCalibration/
 │  ├─ IOffsetApplier.cs          应用通道接口（含 CurrentOffsetSeconds 读取）
 │  └─ CalibrationHistory.cs      结构化 JSONL（协议 v1，含 MatchedTemplate/MatchNcc/MatchSpectral）
 ├─ Settings/BellCalibrationSettingsPage.axaml(.cs)   设置页（含模板匹配卡片与调试转存开关）
-├─ Templates/{上课铃,下课铃}.wav  2 个模板（各 2.5s，48k 单声道 PCM16），**均取自本机麦克风实录样本**
-│                          （上课铃样本 4.16s 起、下课铃样本 2.06s 起）。旧手机样本模板已弃用，
-│                          模板目录内的其它 wav 若不参与匹配，请改名或移除。
-│                          若实机实测仍与真实铃声不符（NCC ≤0.45）→ 下一步用 dump 实录铃声重建模板
+├─ Templates/{上课铃,下课铃}.wav  2 个模板（各 2.5s，48k 单声道 PCM16），**取自 2026-10-07 实机录音**
+│                          （`上课.wav` 的 1.728–4.228s、`下课.wav` 的 1.205–3.705s；区间＝生产匹配器
+│                          在本录音上的唯一命中，**别用自动截取**——下课录音的最响段是环境噪声）。
+│                          旧模板（09-11 样本派生）已移到同级 `Templates-bak-20261007\`：模板目录被
+│                          **非递归**枚举，旧模板留在目录里会被当成第 3、4 个模板。
+│                          逐窗口实测对照见 `bell-recordings\对照记录.md` 的「2026-10-07 模板更新」。
 └─ tools/TemplateTool/           离线工具（复用生产代码）：scan 事件定位 / extract 提取模板 / selftest 匹配自测
    tools/README.md               工具用法与 2026-09-11 实测数据（事件定位表 + 4×4 匹配矩阵）
 ```
@@ -220,11 +222,12 @@ $dst = '<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration'
 $cfg = '<ClassIsland 便携版根目录>\data\Config\Plugins\belltime.calibration'
 Stop-Process -Name 'ClassIsland.Desktop' -Force; Start-Sleep 3   # 必须确认进程已退出，否则 DLL 被占用
 Copy-Item "$src\bin\Release\net8.0\BellTimeCalibration.dll","$src\bin\Release\net8.0\BellTimeCalibration.deps.json","$src\manifest.yml" $dst -Force
-Copy-Item "$src\Templates\*.wav" "$cfg\Templates\" -Force          # 4 个模板
+Copy-Item "$src\Templates\*.wav" "$cfg\Templates\" -Force          # 目录里几个就拷几个（当前 2 个：上课铃/下课铃）
 Start-Process '<ClassIsland 便携版根目录>\app-2.1.0.1-0\ClassIsland.Desktop.exe'
 ```
 
-部署后启动日志应看到 `已加载 4 个模板（上课铃 2.50s、下课铃 2.50s、上课铃 2.50s、下课铃 2.50s）`。
+部署后启动日志应看到 `[校时] 模板 上课铃2.50s、下课铃2.50s`（数量＝模板目录里被枚举到的 `*.wav`；
+静音占位会被跳过并写明原因，所以拷了占位文件时这一行会少一项）。
 
 ### 步骤 1：抓一个边界 dump，实测本机麦 NCC（决定阈值的唯一依据）
 

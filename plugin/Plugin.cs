@@ -94,7 +94,7 @@ public class BellTimeCalibrationPlugin : PluginBase
                 OffsetSampleStore.DeadZoneSeconds = Config.DeadZoneSeconds;
         };
 
-        // 1.1 加载铃声模板（v0.9.0）：长录音样本 → 模板；失败仅告警，选铃回退启发式
+        // 1.1 加载铃声模板（v0.9.0）：长录音样本 → 模板；失败仅告警（该窗口没有模板可用）
         TemplateLibrary.Reload(PluginConfigFolder, Config);
 
         // 1.2 把死区交给样本存储（v1.0.4）：样本管理用它区分「死区带内没写」与「大误差拒写」，
@@ -160,10 +160,12 @@ public class BellTimeCalibrationPlugin : PluginBase
             _runner = new CalibrationRunner(_scheduler, offsetApplier, reviewNotifier);
             Runner = _runner;
 
+            // v1.0.5：版本号直接读 manifest（原先写死在这行里，改版本时漏改就会谎报）。
+            var pluginVersion = Info?.Manifest?.Version ?? "?";
             // v1.0.4 日志瘦身：启动横幅从 6 行压成 1 行（「一天重启几次、每次十来行」的噪声主要来自这里）。
             // 不可用/失败路径仍然逐条 WARN，不打折。
             Logger.Info(
-                $"[校时] 启动 铃声自动校时 v1.0.4 就绪｜偏移通道 {offsetApplier.Name}" +
+                $"[校时] 启动 铃声自动校时 v{pluginVersion} 就绪｜偏移通道 {offsetApplier.Name}" +
                 $"（{(offsetApplier.IsAvailable ? $"当前 {offsetApplier.CurrentOffsetSeconds:F3}s" : "不可用")}）" +
                 $"｜提醒 {(reviewNotifier.IsAvailable ? $"可用（人工审核提醒 {(Config.EnableReviewNotification ? "开" : "关")}）" : "不可用")}" +
                 $"｜手动拟合 {(offsetApplier.IsAvailable ? "可用" : "不可用")}");

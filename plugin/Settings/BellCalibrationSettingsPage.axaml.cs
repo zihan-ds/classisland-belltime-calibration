@@ -23,6 +23,9 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         new("全部文件") { Patterns = new[] { "*" } },
     };
 
+    /// <summary>上次点「清除无用录音」的时刻：两击确认用（第二次点击须在 10 秒内）。</summary>
+    private DateTime _clearDumpsArmedUtc = DateTime.MinValue;
+
     public BellCalibrationSettingsPage()
     {
         InitializeComponent();
@@ -52,10 +55,9 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             Boundary = string.IsNullOrEmpty(sample.BoundaryDisplay) ? "-" : sample.BoundaryDisplay;
             RequiredText = $"{sample.RequiredSec:+0.000;-0.000;0.000} s";
             AppliedText = sample.Applied ? "是" : "否";
-            // 让「为什么默认勾 / 不勾」一眼可见
-            OriginText = sample.Applied ? "写入过"
-                : sample.InDeadZone ? "死区带内（未写）"
-                : "大误差拒写";
+            // 让「为什么默认勾 / 不勾」一眼可见（v1.0.5：改用判据落盘的真实原因，
+            // 旧数据没有 Reason 字段时才退回几何代理，标签会注明「原因未记」）
+            OriginText = OffsetSampleStore.JudgeLabel(sample);
             _valid = sample.UserValid;
         }
 
@@ -119,14 +121,16 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
             var summary = this.FindControl<TextBlock>("SampleSummaryText");
             var eligible = today.Count(s => s.IsEligible);
-            var overridden = today.Count(s => s.UserValid != (s.Applied || s.InDeadZone));
+            var overridden = today.Count(s => s.UserValid != OffsetSampleStore.DefaultValid(s));
             var deadZoneOnes = today.Count(s => s.InDeadZone);
-            var rejected = today.Count(s => !s.Applied && !s.InDeadZone);
+            var sideOnes = today.Count(s => s.IsSideEvidence);
+            var rejected = today.Count(s => !s.Applied && !s.InDeadZone && !s.IsSideEvidence);
             if (summary != null)
             {
                 summary.Text = $"当天 {today.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
                                $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
                                $"{(rejected > 0 ? $"，大误差拒写 {rejected} 条默认不参与（可手动勾上）" : "")}" +
+                               $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条默认不参与（判据没拿到开关窗口测量，只留课表窗口坐标/冲突记录，确认可信再勾）" : "")}" +
                                $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{note}";
             }
 
@@ -285,6 +289,63 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         catch (Exception ex)
         {
             Logger.Warn($"[校时] 测试提醒失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>写结果文字（控件在 XAML 里名为 ClearDumpsText）。</summary>
+    private void SetClearDumpsResult(string text)
+    {
+        var block = this.FindControl<TextBlock>("ClearDumpsText");
+        if (block != null)
+            block.Text = text;
+    }
+
+    /// <summary>把字节数写成 MB（一位小数）。</summary>
+    private static string DescribeSize(long bytes) => $"{bytes / 1048576.0:F1} MB";
+
+    /// <summary>
+    /// 清除无用录音：删掉插件配置目录 <c>Dumps\</c> 里**确实无用**的调试转存 WAV。
+    /// 「什么算无用」由 <see cref="DumpCleaner"/> 定：只删「距现在 ≥ <see cref="DumpCleaner.RetentionDays"/> 天」
+    /// 且「不在 <see cref="DumpCleaner.ProtectedFiles"/> 名单里」的；近期录音、离线断言点名用到的录音、
+    /// 文件名认不出时刻的录音一律保留（铃声模板与样本更是从来不碰）。
+    /// <para>**两击确认**：这是不可撤销的删除，而按钮就摆在设置页里、随时可能被顺手点到，
+    /// 所以第一击只报「会删掉几个、多少体积、保留几个」，10 秒内再点一次才真删。</para>
+    /// <para>全程不抛异常：任何一步失败都写进结果文字与日志，绝不影响设置页交互。</para>
+    /// </summary>
+    private void OnClearDumps(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var folder = Logger.ConfigFolder;
+            var (deletable, bytes, kept) = DumpCleaner.Inspect(folder);
+            if (deletable == 0)
+            {
+                SetClearDumpsResult(kept > 0
+                    ? $"没有可清除的调试录音（保留 {kept} 个：最近 {DumpCleaner.RetentionDays} 天以内的、以及离线断言点名用到的）。"
+                    : "没有可清除的调试录音。");
+                return;
+            }
+
+            if ((DateTime.UtcNow - _clearDumpsArmedUtc).TotalSeconds > 10)
+            {
+                _clearDumpsArmedUtc = DateTime.UtcNow;
+                SetClearDumpsResult($"将删除调试录音 {deletable} 个（{DescribeSize(bytes)}），" +
+                                    $"保留 {kept} 个（最近 {DumpCleaner.RetentionDays} 天以内的、以及离线断言点名用到的）——" +
+                                    "10 秒内再点一次「清除无用录音」即确认删除；超过 10 秒会重新回到这一步。");
+                return;
+            }
+
+            _clearDumpsArmedUtc = DateTime.MinValue;
+            var (deleted, freed, failed, keptAfter) = DumpCleaner.Clear(folder);
+            SetClearDumpsResult($"已删除调试录音 {deleted} 个，释放 {DescribeSize(freed)}，保留 {keptAfter} 个。" +
+                                (failed > 0 ? $"另有 {failed} 个删除失败（可能正被写入占用），详见插件日志。" : string.Empty));
+            Logger.Info($"[校时] 清除调试录音（设置页按钮）：删除 {deleted} 个、释放 {freed} 字节；失败 {failed} 个；" +
+                        $"保留 {keptAfter} 个（最近 {DumpCleaner.RetentionDays} 天以内 + 离线断言用）。");
+        }
+        catch (Exception ex)
+        {
+            SetClearDumpsResult($"清除调试录音失败：{ex.Message}");
+            Logger.Warn($"[校时] 清除调试录音异常：{ex}");
         }
     }
 

@@ -12,13 +12,13 @@ namespace BellTimeCalibration.Services;
 /// <item><description>长录音样本 + 截取区间（如样本文件 + "12.0-14.5"；留空则自动取最响且持续 ≥1.5s 的段）；</description></item>
 /// <item><description>已截取的模板 WAV：<c>&lt;插件配置目录&gt;/&lt;TemplateDirectory&gt;/上课铃.wav</c> 与 <c>下课铃.wav</c>（文件名里的“上课/下课”用于识别）。</description></item>
 /// </list>
-/// 加载失败一律只告警并继续（插件回退到启发式选铃），绝不因模板问题影响校准主链路。
+/// 加载失败一律只告警并继续（此时该窗口没有模板可用），绝不因模板问题影响校准主链路。
 /// </summary>
 public static class TemplateLibrary
 {
     private static readonly List<BellTemplate> Loaded = new();
 
-    /// <summary>已加载的模板（可能为空 = 未配置模板，走启发式回退）。</summary>
+    /// <summary>已加载的模板（可能为空 = 未配置模板，此时只有起响沿闸门可用）。</summary>
     public static IReadOnlyList<BellTemplate> Templates => Loaded;
 
     /// <summary>加载状态说明（供启动日志与设置页展示）。</summary>
@@ -36,7 +36,7 @@ public static class TemplateLibrary
 
         if (!config.EnableTemplateMatch)
         {
-            StatusMessage = "模板匹配已关闭（设置项 EnableTemplateMatch=false），选铃使用启发式。";
+            StatusMessage = "模板匹配已关闭（设置项 EnableTemplateMatch=false），仅使用起响沿闸门。";
             Logger.Info($"[校时] {StatusMessage}");
             return;
         }
@@ -84,7 +84,7 @@ public static class TemplateLibrary
 
         StatusMessage = Loaded.Count > 0
             ? $"已加载 {Loaded.Count} 个模板（{string.Join("、", Loaded.ConvertAll(t => $"{t.Label} {t.DurationSeconds:F2}s"))}）"
-            : "未加载到任何模板（未配置样本路径，且模板目录内没有可用的 WAV）→ 选铃回退启发式。";
+            : "未加载到任何模板（未配置样本路径，且模板目录内没有可用的 WAV）→ 仅使用起响沿闸门。";
 
         if (Loaded.Count > 0)
             Logger.Info($"[校时] 模板 {string.Join("、", Loaded.ConvertAll(t => $"{t.Label}{t.DurationSeconds:F2}s"))}");

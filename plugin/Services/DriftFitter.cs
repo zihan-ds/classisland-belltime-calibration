@@ -78,6 +78,11 @@ public sealed class DriftFitter
     /// 用历史样本预置拟合器（v1.0.1，供进程重启后恢复**当天**序列）。
     /// 与逐条 <see cref="Add"/> 的区别：**不做跳变检测**——历史样本本就同属一个基准，
     /// 逐条跑跳变判定会把正常的时间漂移误判成「人工校准」而清空序列。
+    ///
+    /// v1.0.5：**先清空已有样本**。「预置」在语义上就是「用这批历史替换当前序列」，
+    /// 而原来的实现是追加 —— 手动拟合后 <c>ReloadTodaySamples()</c> 会把同一批当天样本再灌一遍，
+    /// 早期样本被计两次、40 条上限更早挤掉真样本（2026-10-07 实测：15:40 的 11 个样本
+    /// 在 16:20 变成 23 个 = 11 + 11 + 1）。
     /// </summary>
     /// <param name="history">历史样本（按时间升序）。</param>
     /// <returns>实际导入的样本数。</returns>
@@ -85,6 +90,7 @@ public sealed class DriftFitter
     {
         lock (_sync)
         {
+            _samples.Clear();
             var count = 0;
             var lastAt = DateTime.MinValue;
             foreach (var (at, required) in history)

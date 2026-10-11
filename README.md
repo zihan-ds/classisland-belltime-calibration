@@ -7,7 +7,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.0.4** |
+| 版本 | **1.0.5** |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 平台 | Windows（需要可用的默认输入设备） |
 | 许可 | GPL-3.0-only（见 [`LICENSE`](LICENSE)） |

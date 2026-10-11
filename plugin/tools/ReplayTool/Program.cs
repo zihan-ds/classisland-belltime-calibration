@@ -8,8 +8,8 @@ using BellTimeCalibration.Services;
 namespace BellTimeCalibration.Tools;
 
 /// <summary>
-/// 回放工具：对已采集的实机 dump 跑一遍**与插件完全相同**的判定链，把每一步的数值打出来。
-/// 用途：离线复核「这个边界插件会选到哪一点、为什么」——模板匹配（含攻击沿）与启发式选铃都在这里被真实调用，
+/// 回放工具：对已采集的 dump 跑一遍**与插件完全相同**的判定链，把每一步的数值打出来。
+/// 用途：离线复核「这个边界插件会选到哪一点、为什么」——闸门与模板匹配（含攻击沿）都在这里被真实调用，
 /// 而不是靠外部脚本近似。
 ///
 /// 用法：
@@ -44,6 +44,10 @@ public static class Program
         if (args.Length > 0 && string.Equals(args[0], "sample-manage-test", StringComparison.OrdinalIgnoreCase))
             return SampleManageTest();
 
+        // 「清除无用录音」的回归断言（dumps-clear-test）
+        if (args.Length > 0 && string.Equals(args[0], "dumps-clear-test", StringComparison.OrdinalIgnoreCase))
+            return DumpsClearTest();
+
         // 双窗口复核诊断（gate-reconcile <dump.wav> [当时偏移秒]）
         if (args.Length > 0 && string.Equals(args[0], "gate-reconcile", StringComparison.OrdinalIgnoreCase))
             return GateReconcile(args);
@@ -56,6 +60,10 @@ public static class Program
         if (args.Length > 0 && string.Equals(args[0], "absolute-required-test", StringComparison.OrdinalIgnoreCase))
             return AbsoluteRequiredTest();
 
+        // 整段包络（envelope <dump.wav> [步长秒]）：回答「这段时间里到底有什么声音」
+        if (args.Length > 0 && string.Equals(args[0], "envelope", StringComparison.OrdinalIgnoreCase))
+            return Envelope(args);
+
         if (args.Length < 3)
         {
             Console.WriteLine("用法：");
@@ -63,12 +71,14 @@ public static class Program
             Console.WriteLine("  ReplayTool fitter <样本序列文件> [死区秒=0.3]   # 离线验证偏移估计算法（每行：yyyy-MM-dd HH:mm:ss,所需偏移秒）");
             Console.WriteLine("  ReplayTool notify-test                        # 断言「人工审核提醒」的开关与阈值判定");
             Console.WriteLine("  ReplayTool sample-manage-test                 # 断言样本管理（人工作废标记）的数据层行为");
+            Console.WriteLine("  ReplayTool dumps-clear-test                   # 断言「清除无用录音」只删陈年 wav（近期/断言夹具/非 wav/子目录一律不动）");
             Console.WriteLine("  ReplayTool manual-fit <offset-samples.jsonl> [yyyy-MM-dd]  # 跑一遍手动拟合（当天有效样本 → 偏移）");
             Console.WriteLine("  ReplayTool gate-scan <dump.wav> <边界在dump内秒数>   # 打印闸门候选表（比值/峰值）+ 两种选法对比");
             Console.WriteLine("  ReplayTool gate-scan <Dumps 目录>                    # 对目录内全部 dump（文件名含边界时刻）批量跑");
-            Console.WriteLine("  ReplayTool gate-guard <Dumps 目录>                   # 断言「基线静默候选被排除」（含 2026-09-19 静默样本）");
+            Console.WriteLine("  ReplayTool gate-guard <Dumps 目录>                   # 断言「基线静默候选被排除」（含整段数字静默的样本）");
+            Console.WriteLine("  ReplayTool envelope <dump.wav> [步长秒=0.1]          # 整段 RMS 包络（铃到底响在哪几段）");
             Console.WriteLine("  ReplayTool gate-reconcile <dump.wav> [当时偏移秒]    # 打印开关窗口/课表窗口两套判据 + 复核结论");
-            Console.WriteLine("  ReplayTool gate-reconcile-test <Dumps 目录>          # 断言双窗口复核（含 2026-09-20 上午 4 个杂音窗口）");
+            Console.WriteLine("  ReplayTool gate-reconcile-test <Dumps 目录>          # 断言双窗口复核（含开关窗口与课表窗口结论相反的样本）");
             Console.WriteLine("  ReplayTool absolute-required-test                    # 断言退化口径换算（残差 + 当前偏移 = 绝对所需偏移）");
             return 1;
         }
@@ -146,35 +156,15 @@ public static class Program
         Console.WriteLine($"  明细：{note}");
         Console.WriteLine();
 
-        // ── 2) 启发式选铃（对整个捕获区做突发检测，再按与插件相同的口径选段） ──
-        var detector = new RingDetector(2.0);
-        const int blockFrames = 4800; // 100 ms
-        for (var offset = 0; offset + blockFrames <= samples.Length; offset += blockFrames)
-        {
-            var block = new float[blockFrames];
-            Array.Copy(samples, offset, block, 0, blockFrames);
-            var blockWallUtc = anchorWallUtc.AddSeconds(offset / (double)CaptureAudio.SampleRate);
-            detector.Feed(block, blockWallUtc);
-        }
-
-        detector.Flush();
-        var postSettle = RingCandidateSelector.ExcludeSettlePeriod(detector.Bursts, anchorWallUtc);
-        Console.WriteLine(
-            $"启发式候选（仅供参考）：原始 {detector.Bursts.Count} 段 / 静置后 {postSettle.Count} 段" +
-            $"（噪声底 {detector.NoiseFloorDb:F1} dBFS 峰值 {detector.MaxRmsDb:F1} dBFS）");
-
-        // ── 2) 启发式选铃：**已移除**（v0.10.2）──
-        // 实测其误差可达 −7.8~+8.1 s（选错事件），属「已确认不准的办法」，插件不再使用。
-        // 这里只报告结论，不给估算值，避免离线复核时又被那个数带偏。
         var measuredByGate = gate != null;
         var measuredByTemplate = match != null;
         Console.WriteLine(measuredByGate
             ? "结论：本窗口由【起响沿闸门】给出可信测量。"
             : measuredByTemplate
                 ? "结论：本窗口由【模板匹配】给出可信测量。"
-                : "结论：**本窗口无可信测量** —— 闸门与模板均未命中；插件不会写入偏移（启发式兜底已移除）。");
+                : "结论：**本窗口无可信测量** —— 闸门与模板均未命中；插件不会写入偏移。");
 
-        // ── 3) 攻击沿逐点（10 ms 步长，找真实起响点） ──
+        // ── 2) 攻击沿逐点（10 ms 步长，找真实起响点） ──
         Console.WriteLine();
         Console.WriteLine("有攻击沿的位置（比值 ≥4×，0.5 s 步长）：");
         for (var sec = 0.0; sec < samples.Length / (double)CaptureAudio.SampleRate - 0.5; sec += 0.5)
@@ -185,6 +175,80 @@ public static class Program
             var ratio = peakRms / Math.Max(baseRms, 1e-9);
             if (ratio >= 4.0)
                 Console.WriteLine($"  {sec,7:F1}s  比值 {ratio,6:F1}x");
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// 整段 RMS 包络（只读诊断）：把「这段时间里到底有什么声音」按固定步长打出来。
+    ///
+    /// 动机（2026-10-07 晚）：人工把偏移改成 +7.05 s 之后，闸门与模板都答不出「铃到底在哪」——
+    /// 闸门只会说「±2 s 窗内没有合格起响沿」，模板只会说 NCC≈0.01。判断铃的位置只能先看原始包络：
+    /// 响的是哪几段、比环境底高多少。文件名同时给出布防起点与标称边界，两列时间并排打，
+    /// 行尾标注「开关窗口中心（文件内 20.0s）」与「课表窗口中心（标称边界）」。
+    ///
+    /// 用法：ReplayTool envelope &lt;dump.wav&gt; [步长秒=0.1]
+    /// </summary>
+    private static int Envelope(string[] args)
+    {
+        if (args.Length < 2 || !File.Exists(args[1]))
+        {
+            Console.WriteLine("用法：ReplayTool envelope <dump.wav> [步长秒=0.1]");
+            return 1;
+        }
+
+        var step = args.Length > 2 && double.TryParse(args[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var st) && st > 0
+            ? st
+            : 0.1;
+
+        var samples = WavReader.ReadMono48k(args[1], out var readNote);
+        if (samples == null)
+        {
+            Console.WriteLine($"读取失败：{readNote}");
+            return 2;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(args[1]);
+        var m = System.Text.RegularExpressions.Regex.Match(name, @"^\d{8}-(\d{2})(\d{2})(\d{2})-(\S+)-B(\d{2})(\d{2})(\d{2})$");
+        var hasTimes = m.Success;
+        var startWall = hasTimes
+            ? new TimeSpan(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value))
+            : TimeSpan.Zero;
+        var nominalInDump = hasTimes
+            ? new TimeSpan(int.Parse(m.Groups[5].Value), int.Parse(m.Groups[6].Value), int.Parse(m.Groups[7].Value))
+                .Subtract(startWall).TotalSeconds
+            : double.NaN;
+        if (hasTimes && nominalInDump < 0)
+            nominalInDump += 24 * 3600;
+
+        Console.WriteLine($"dump：{Path.GetFileName(args[1])}（{readNote}）");
+        if (hasTimes)
+            Console.WriteLine($"起点 {startWall:hh\\:mm\\:ss}（布防时刻）→ 标称边界在文件内 {nominalInDump:F3}s；"
+                              + "开关窗口中心恒在文件内 20.000s（布防提前量 20 s）");
+        Console.WriteLine($"步长 {step:F3}s　格式：文件内秒　[墙钟]　dBFS");
+
+        var total = samples.Length / (double)CaptureAudio.SampleRate;
+        var win = Math.Max(1, (int)(step * CaptureAudio.SampleRate));
+        for (var t = 0.0; t < total; t += step)
+        {
+            var from = (int)Math.Round(t * CaptureAudio.SampleRate);
+            var to = Math.Min(samples.Length, from + win);
+            var rms = Rms(samples, from, to);
+            var db = 20 * Math.Log10(Math.Max(rms, 1e-12));
+            var bars = (int)Math.Clamp((db + 60.0) / 60.0 * 40.0, 0, 40);
+
+            var tag = "";
+            if (hasTimes)
+            {
+                if (Math.Abs(t - 20.0) < step / 2)
+                    tag = "  ← 开关窗口中心";
+                if (Math.Abs(t - nominalInDump) < step / 2)
+                    tag = "  ← 课表窗口中心（标称边界）";
+            }
+
+            var wallCol = hasTimes ? $" {startWall.Add(TimeSpan.FromSeconds(t)):hh\\:mm\\:ss\\.ff}" : "";
+            Console.WriteLine($"  {t,7:F2}s{wallCol}  {db,7:F1}  {new string('#', bars)}{tag}");
         }
 
         return 0;
@@ -404,6 +468,12 @@ public static class Program
     /// **断言：判为 Agree（行为与修复前完全一致）**。</description></item>
     /// <item><description>2026-09-17 09:00 上课：课表窗口无合格起响沿。
     /// **断言：判为 SwitchOnly（行为与修复前完全一致）**。</description></item>
+    /// <item><description>2026-10-07 20:10 上课 / 21:30 下课（v1.0.5 新增）：偏移被人为改成 +7.05 s 之后的真实处境
+    /// —— 两窗口抓到的是同一段约 15 s 多击钟声的**不同两击**（相差 5.66 s / 3.74 s，峰值只差 0.7 / 0.1 dB）。
+    /// **断言：判为 PreferSwitch（取更早的开关窗口），旧版则分别是不留样本的 no-trusted-match 与 match-conflict**。</description></item>
+    /// <item><description>2026-10-07 20:00 下课（v1.0.5 新增）：布防晚 3.4 s，开麦时铃的第一击已经在响，
+    /// 当窗偏移还是布防时冻结的 −16.34 s（用户把偏移改成 +7.05 s 发生在开麦之后）。开关窗口空、只有课表窗口命中。
+    /// **断言：判为 ScheduleOnly —— 只作旁证；v1.0.4 这类窗口连一条样本都不落（正是「人工校准后样本全废」的现场）**。</description></item>
     /// </list>
     /// </summary>
     private static int GateReconcileTest(string[] args)
@@ -414,30 +484,65 @@ public static class Program
             return 1;
         }
 
-        var cases = new (string File, OnsetGate.WindowVerdict Expected, string Why)[]
+        // 第 4 列 OffsetSeconds = 当时内核偏移：null 表示按文件名反推（布防恰好提前 20.0 s 时的常规情形）；
+        // 显式传值用于布防晚于 20.0 s 的窗口（2026-10-07 晚间就是如此，文件名反推会偏 ~1 s）。
+        var cases = new (string File, OnsetGate.WindowVerdict Expected, string Why, double? OffsetSeconds)[]
         {
-            ("20260920-084933-下课-B085000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 14.0 dB（真铃在课表边界上）"),
-            ("20260920-093933-下课-B094000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 2.1 dB"),
-            ("20260920-104932-下课-B105000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 3.3 dB"),
-            ("20260920-113931-下课-B114000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 4.8 dB"),
-            ("20260918-093948-下课-B094000.wav", OnsetGate.WindowVerdict.PreferSwitch, "铃确实晚 9 秒，模板 NCC 0.924 佐证"),
-            ("20260920-143941-下课-B144000.wav", OnsetGate.WindowVerdict.Agree, "两窗口同一起响"),
-            ("20260920-173941-下课-B174000.wav", OnsetGate.WindowVerdict.Agree, "两窗口同一起响"),
-            ("20260917-085946-上课-B090000.wav", OnsetGate.WindowVerdict.SwitchOnly, "课表窗口无合格起响沿"),
+            ("20260920-084933-下课-B085000.wav", OnsetGate.WindowVerdict.Agree, "v1.0.5 长铃起点回溯后两窗一致：课表窗口从钟声中段那一击（文件内 27.55s）回溯到这段声音的起点 22.23s，与开关窗口命中 21.89s 只差 0.34s。回溯前判 Conflict（开关 −27.3 dBFS 比课表 −13.8 dBFS 弱 13.5 dB、两窗相差 5.66s）——写值与课表窗口口径只差 0.34s", null),
+            ("20260920-093933-下课-B094000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 2.1 dB", null),
+            ("20260920-104932-下课-B105000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 3.3 dB", null),
+            ("20260920-113931-下课-B114000.wav", OnsetGate.WindowVerdict.Conflict, "上午下课：课表窗口强 4.8 dB", null),
+            ("20260918-093948-下课-B094000.wav", OnsetGate.WindowVerdict.PreferSwitch, "铃确实晚 9 秒，模板 NCC 0.924 佐证", null),
+            ("20260920-143941-下课-B144000.wav", OnsetGate.WindowVerdict.Agree, "两窗口同一起响", null),
+            ("20260920-173941-下课-B174000.wav", OnsetGate.WindowVerdict.Agree, "两窗口同一起响", null),
+            ("20260917-085946-上课-B090000.wav", OnsetGate.WindowVerdict.SwitchOnly, "课表窗口无合格起响沿", null),
+
+            // v1.0.5 新增：2026-10-07 晚间三个真实窗口（当时偏移由用户人工改为 +7.05 s）
+            ("20261007-200932-上课-B201000.wav", OnsetGate.WindowVerdict.PreferSwitch,
+                "v1.0.5：开关窗口靠「高声压起响」入选（2.1× 但 -16.3 dBFS），两窗相差 5.66s、峰值仅差 0.7 dB = 同一段 15s 长铃的先后两击；v1.0.4 判 no-trusted-match、不留样本", 7.05),
+            ("20261007-212932-下课-B213000.wav", OnsetGate.WindowVerdict.Agree,
+                "v1.0.5：长铃起点回溯把两窗口都挪到钟声第一击上，Δt=0.00s → 两窗一致；未回溯时判 PreferSwitch（开关 -22.9 / 课表 -23.0 dBFS 相差 3.74s、峰值差 0.1 dB，同一段 15s 长铃的先后两击），v1.0.4 判 match-conflict、不写不留样本", 7.05),
+            ("20261007-195956-下课-B200000.wav", OnsetGate.WindowVerdict.ScheduleOnly,
+                "开麦时铃的第一击已在响（布防晚 3.4s，当窗偏移仍是布防时冻结的 -16.34s；用户把偏移改成 +7.05 是在开麦之后）：开关窗口空、只有课表窗口命中 → 只作旁证 —— v1.0.4 判 no-trusted-match 且一条样本都不落，v1.0.5 起落一条旁证样本", -16.34),
+
+            // v1.0.5 补（对称支配）：偏移被人工改乱后的真实窗口 —— 闸门半窗还是 2 s 时，开关窗口只剩 2 个合格候选
+            // （20 ms 单点瞬态）、课表窗口强 16.9 dB，于是 v1.0.5 先判 match-conflict（不写不落样本）、
+            // 补对称支配后改用课表窗口坐标。2026-10-12 半窗加宽到 8 s 后，开关窗口也能看到真正的钟声 → 两窗一致，
+            // 本用例随之改判 Agree；对称支配那条路径由下面的合成用例继续覆盖，不再依赖这个录音。
+            ("20261012-085938-上课-B090000.wav", OnsetGate.WindowVerdict.Agree,
+                "半窗 8 s（2026-10-12 起）后开关窗口也能看见真铃 → 两窗一致；半窗 2 s 时代这里判 PreferSchedule", 1.730),
         };
 
+        // 注意：带真实录音的用例里，有 11 条的录音在 2026-10-12 被「清除无用录音」误删（连回收站一起清空）——
+        // 它们现在只会打印「跳过」，其期望值仍是 ±2 s 半窗时代的记录；若将来重录同名文件，需重新核对期望。
+
         var failed = 0;
+        var skipped = 0;
+
+        // 漂移断言：用例表里的每个录音都必须列在 DumpCleaner.ProtectedFiles 里 —— 设置页「清除无用录音」
+        // 永远不删名单里的文件。谁加了用例却忘了加名字，跑一次本断言就会红（这正是录音被误删的那次事故）。
+        foreach (var c in cases)
+        {
+            if (Array.IndexOf(DumpCleaner.ProtectedFiles, c.File) < 0)
+            {
+                Console.WriteLine($"  [失败] 用例 {c.File} 不在 DumpCleaner.ProtectedFiles 里：设置页「清除无用录音」会把它删掉");
+                failed++;
+            }
+        }
+
         foreach (var c in cases)
         {
             var path = Path.Combine(args[1], c.File);
             if (!File.Exists(path))
             {
-                Console.WriteLine($"  [失败] 缺少 dump：{c.File}（本断言依赖实机录音，仓库不分发音频）");
-                failed++;
+                // 2026-10-12：这些录音被「清除无用录音」误删后永久丢失（仓库不分发音频、回收站也已清空），
+                // 已无法复核 → 记为「跳过」而不是失败，免得一个永远修不好的红项把真回归埋掉。
+                Console.WriteLine($"  [跳过] 缺少 dump：{c.File}（录音已丢失：2026-10-12 误删事故；仓库不分发音频）");
+                skipped++;
                 continue;
             }
 
-            var r = ScanBothWindows(path, null);
+            var r = ScanBothWindows(path, c.OffsetSeconds);
             if (r == null)
             {
                 Console.WriteLine($"  [失败] {c.File}：文件名无法解析");
@@ -456,16 +561,54 @@ public static class Program
             }
         }
 
+        // v1.0.5 补（对称支配）：合成命中用例 —— 不依赖录音，直接卡 Reconcile 的分支边界。
+        // 支配判据必须**对称**：开关更强 → 用开关；课表更强 → 用课表；只有中间带（2~6 dB）才判冲突。
+        var t0 = new DateTime(2026, 10, 12, 9, 0, 0, DateTimeKind.Local);
+        var synth = new (string Why, double SwitchDb, double ScheduleDb, double DeltaSec,
+                         OnsetGate.WindowVerdict Expected, bool ExpectScheduleReturned)[]
+        {
+            ("开关强 7.0 dB、相差 3.0s → 用开关窗口", -23.0, -30.0, 3.0, OnsetGate.WindowVerdict.PreferSwitch, false),
+            ("课表强 7.0 dB、相差 3.0s → 用课表窗口（对称支配）", -30.0, -23.0, 3.0, OnsetGate.WindowVerdict.PreferSchedule, true),
+            ("课表强 6.2 dB（刚过支配门）→ 用课表窗口", -30.0, -23.8, 3.0, OnsetGate.WindowVerdict.PreferSchedule, true),
+            ("课表强 5.8 dB（差一点）→ 仍判冲突", -30.0, -24.2, 3.0, OnsetGate.WindowVerdict.Conflict, false),
+            ("课表强 4.8 dB（2026-09-20 那批的量级）→ 仍判冲突", -30.0, -25.2, 3.0, OnsetGate.WindowVerdict.Conflict, false),
+            ("课表强 12.0 dB 但只差 0.5s → 一致优先，用开关窗口", -32.0, -20.0, 0.5, OnsetGate.WindowVerdict.Agree, false),
+        };
+        foreach (var s in synth)
+        {
+            var switchHit = SynthHit(t0, s.SwitchDb);
+            var scheduleHit = SynthHit(t0.AddSeconds(s.DeltaSec), s.ScheduleDb);
+            var chosen = OnsetGate.Reconcile(switchHit, scheduleHit, out var synVerdict, out var synNote);
+            var returnedSchedule = chosen != null && chosen.Value.OnsetUtc == scheduleHit.OnsetUtc;
+            if (synVerdict == s.Expected && returnedSchedule == s.ExpectScheduleReturned)
+            {
+                Console.WriteLine($"  [通过] 合成：{s.Why} → {synVerdict}");
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"  [失败] 合成：{s.Why}：期望 {s.Expected}／返回{(s.ExpectScheduleReturned ? "课表" : "开关")}，" +
+                    $"实际 {synVerdict}／返回{(returnedSchedule ? "课表" : "开关")} —— {synNote}");
+                failed++;
+            }
+        }
+
         Console.WriteLine();
         if (failed == 0)
         {
-            Console.WriteLine("  双窗口复核断言全部通过（含 2026-09-20 上午 4 个杂音窗口被判冲突）。");
+            Console.WriteLine($"  双窗口复核断言全部通过（含「开关窗口与课表窗口结论相反」与「长铃起点回溯后改判一致」两类窗口，"
+                              + "以及「支配判据对称：开关更强用开关、课表更强用课表、中间带才判冲突」的合成用例）"
+                              + (skipped > 0 ? $"；跳过 {skipped} 条（录音已丢失，见上）。" : "；无跳过项。"));
             return 0;
         }
 
         Console.WriteLine($"  断言失败 {failed} 项。");
         return 7;
     }
+
+    /// <summary>合成一次闸门命中（v1.0.5 补）：只给墙钟与峰值 dBFS，用于复核判据的分支断言，不依赖录音。</summary>
+    private static OnsetGate.OnsetHit SynthHit(DateTime onsetLocal, double peakDb)
+        => new(0, onsetLocal.ToUniversalTime(), 5.0, "合成用例", PeakRms: Math.Pow(10, peakDb / 20.0));
 
     /// <summary>
     /// 退化口径换算的回归断言（v1.0.4 增补）：未观测到切换时，绝对所需偏移 = 残差 + 当前偏移。
@@ -683,6 +826,120 @@ public static class Program
         return 7;
     }
 
+    /// <summary>
+    /// 「清除无用录音」（设置页按钮）的数据层回归断言：直接断言生产代码 <see cref="DumpCleaner"/>，
+    /// 而不是另抄一份删除逻辑。覆盖：
+    /// <list type="bullet">
+    /// <item><description>清点：只数 <c>Dumps\</c> 下一层的 <c>*.wav</c>，体积相加正确；</description></item>
+    /// <item><description>清除：只删「陈年且不在保护名单里」的 wav，返回数量 / 释放体积 / 失败数 / 保留数；</description></item>
+    /// <item><description>**保留判据**：<see cref="DumpCleaner.RetentionDays"/> 天以内的、名字在
+    /// <see cref="DumpCleaner.ProtectedFiles"/> 里的（离线断言夹具）、名字认不出时刻的一律不删；</description></item>
+    /// <item><description>**安全边界**：铃声模板、非 wav 文件、子目录里的 wav 一个都不能少（这是不可撤销的删除）；</description></item>
+    /// <item><description>幂等：再清一次是空操作，不报错；</description></item>
+    /// <item><description>配置目录为空 / 不存在时不抛异常。</description></item>
+    /// </list>
+    /// 任一条不符即返回非零。
+    /// </summary>
+    private static int DumpsClearTest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "belltime-dumps-clear-test");
+        if (Directory.Exists(root))
+            Directory.Delete(root, true);
+
+        var dumps = Path.Combine(root, "Dumps");
+        var templates = Path.Combine(root, "Templates");
+        var nested = Path.Combine(dumps, "sub");
+        Directory.CreateDirectory(dumps);
+        Directory.CreateDirectory(templates);
+        Directory.CreateDirectory(nested);
+
+        var failed = 0;
+        void Check(bool ok, string what)
+        {
+            Console.WriteLine($"  [{(ok ? "通过" : "失败")}] {what}");
+            if (!ok)
+                failed++;
+        }
+
+        try
+        {
+            // 基准时刻写死：断言不随运行日期漂移
+            var now = new DateTime(2026, 10, 12, 12, 0, 0, DateTimeKind.Local);
+
+            // 两个陈年调试录音（1000 + 3000 字节）= 唯一该删的
+            var a = Path.Combine(dumps, "20260101-080000-上课-B080000.wav");
+            var b = Path.Combine(dumps, "20260101-120000-下课-B120000.wav");
+            File.WriteAllBytes(a, new byte[1000]);
+            File.WriteAllBytes(b, new byte[3000]);
+
+            // 三份「绝不该删」的：近 7 天的、名字在保护名单里的（哪怕很旧）、名字认不出时刻的
+            var recent = Path.Combine(dumps, "20261012-100000-上课-B100000.wav");
+            File.WriteAllBytes(recent, new byte[2000]);
+            var protectedOld = Path.Combine(dumps, "20260917-085946-上课-B090000.wav");
+            File.WriteAllBytes(protectedOld, new byte[4000]);
+            var weird = Path.Combine(dumps, "随手丢进来的录音.wav");
+            File.WriteAllBytes(weird, new byte[6000]);
+
+            // 三类结构上就不该被碰的东西
+            var keepTemplate = Path.Combine(templates, "上课铃.wav");
+            File.WriteAllBytes(keepTemplate, new byte[240044]);
+            var keepNote = Path.Combine(dumps, "转存说明.txt");
+            File.WriteAllText(keepNote, "非 wav");
+            var keepNested = Path.Combine(nested, "不该被递归删掉.wav");
+            File.WriteAllBytes(keepNested, new byte[500]);
+
+            Check(Array.IndexOf(DumpCleaner.ProtectedFiles, Path.GetFileName(protectedOld)) >= 0,
+                "保护名单里确实有这个用例夹具名（名单与用例表对得上）");
+
+            var counted = DumpCleaner.Inspect(root, now);
+            Check(counted.Deletable == 2, $"清点：可清除 {counted.Deletable} 个（期望 2）");
+            Check(counted.Bytes == 4000, $"清点：可清除体积 {counted.Bytes} 字节（期望 4000）");
+            Check(counted.Kept == 3, $"清点：保留 {counted.Kept} 个（期望 3：近期 / 保护名单 / 认不出名字）");
+
+            var cleared = DumpCleaner.Clear(root, now);
+            Check(cleared.Deleted == 2, $"删除 {cleared.Deleted} 个（期望 2）");
+            Check(cleared.FreedBytes == 4000, $"释放 {cleared.FreedBytes} 字节（期望 4000）");
+            Check(cleared.Failed == 0, $"失败 {cleared.Failed} 个（期望 0）");
+            Check(cleared.Kept == 3, $"保留 {cleared.Kept} 个（期望 3）");
+            Check(!File.Exists(a) && !File.Exists(b), "★ 两个陈年调试录音已删除");
+
+            Check(File.Exists(recent), $"★ {DumpCleaner.RetentionDays} 天以内的录音未被删除");
+            Check(File.Exists(protectedOld), "★ 保护名单里的录音未被删除（离线断言夹具）");
+            Check(File.Exists(weird), "★ 名字认不出时刻的录音未被删除（不猜着删）");
+            Check(File.Exists(keepTemplate), "★ 铃声模板（Templates\\上课铃.wav）未被删除");
+            Check(File.Exists(keepNote), "★ 非 wav 文件未被删除");
+            Check(File.Exists(keepNested), "★ 子目录里的 wav 未被删除（不递归）");
+            Check(Directory.Exists(dumps), "Dumps 目录本身保留（下次转存还能写）");
+
+            var again = DumpCleaner.Clear(root, now);
+            Check(again is { Deleted: 0, FreedBytes: 0, Failed: 0, Kept: 3 }, "★ 再清一次是空操作（幂等）");
+
+            var missing = DumpCleaner.Inspect(Path.Combine(root, "不存在的目录"), now);
+            Check(missing is { Deletable: 0, Bytes: 0, Kept: 0 }, "配置目录不存在 → 清点 0 个（不抛异常）");
+            Check(DumpCleaner.Inspect("", now) is { Deletable: 0, Bytes: 0, Kept: 0 }, "配置目录为空串 → 清点 0 个（不抛异常）");
+            Check(DumpCleaner.Clear(null, now) is { Deleted: 0, FreedBytes: 0, Failed: 0, Kept: 0 }, "配置目录为 null → 删除 0 个（不抛异常）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [失败] 异常：{ex}");
+            failed++;
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        Console.WriteLine();
+        if (failed == 0)
+        {
+            Console.WriteLine("「清除无用录音」断言全部通过。");
+            return 0;
+        }
+
+        Console.WriteLine($"有 {failed} 项断言失败。");
+        return 7;
+    }
+
     /// <summary>一个窗口的闸门对比结果（供汇总统计）。</summary>
     private sealed class GateScanRow
     {
@@ -829,8 +1086,8 @@ public static class Program
             ("开关开，改动 0.8s 未超阈值 3.0s → 不弹", 0.8, 3.0, true, false),
             ("开关开，改动 3.5s 超过阈值 3.0s → 弹", 3.5, 3.0, true, true),
             ("开关开，改动 2.0s 恰好等于阈值 2.0s（严格大于语义）→ 不弹", 2.0, 2.0, true, false),
-            ("开关开，改动 -5.8s（实机 2026-09-17 17:10 那次，取绝对值）→ 弹", -5.8, 3.0, true, true),
-            ("开关开，改动 7.5s（实机 18:50 那次 +0.29 与基准 -7.2 的差）→ 弹", 7.5, 3.0, true, true),
+            ("开关开，改动 -5.8s（取绝对值）→ 弹", -5.8, 3.0, true, true),
+            ("开关开，改动 7.5s（与基准值的差）→ 弹", 7.5, 3.0, true, true),
         };
 
         Console.WriteLine("提醒判定离线断言（无冷却；由「人工审核提醒」开关决定是否弹）：");
@@ -924,14 +1181,17 @@ public static class Program
         Console.WriteLine($"筛选日期：{day:yyyy-MM-dd}；当天样本 {samples.Count} 个" +
                           $"（参与拟合 {samples.Count(s => s.IsEligible)} 个，" +
                           $"其中死区带内 {samples.Count(s => s.InDeadZone)} 个默认参与、" +
-                          $"大误差拒写 {samples.Count(s => !s.Applied && !s.InDeadZone)} 个默认不参与）");
+                          $"拒写 {samples.Count(s => !s.Applied && !s.InDeadZone && !s.IsSideEvidence)} 个默认不参与" +
+                          (samples.Any(s => s.IsSideEvidence)
+                              ? $"、旁证 {samples.Count(s => s.IsSideEvidence)} 个默认不参与"
+                              : "") + "）");
         Console.WriteLine();
 
         foreach (var s in samples)
         {
             var mark = s.IsEligible ? "[参与]" : "[不参与]";
-            var origin = s.Applied ? "写入过" : s.InDeadZone ? "死区带内" : "大误差拒写";
-            var changed = s.UserValid == (s.Applied || s.InDeadZone) ? "" : "（人工调整）";
+            var origin = OffsetSampleStore.JudgeLabel(s);
+            var changed = s.UserValid == OffsetSampleStore.DefaultValid(s) ? "" : "（人工调整）";
             Console.WriteLine($"  {mark} {s.At:HH:mm:ss.fff}  所需偏移 {s.RequiredSec,9:F4}s  {origin}{changed}");
         }
         Console.WriteLine();

@@ -86,7 +86,7 @@ public class BellCalibrationSettings : INotifyPropertyChanged
     }
 
     private double _toleranceSeconds = 12;
-    /// <summary>铃响搜索半窗（±秒，v0.8.0 起语义）：以课表标称边界为中心搜索铃声起响点的范围，须覆盖校铃钟漂移幅度（可达 ~10s）。</summary>
+    /// <summary>铃响搜索半窗（±秒）：**模板兜底路径**的搜索半窗，只在闸门未命中时才用（`CalibrationRunner.cs:492-498` 以课表标称边界为中心 ±该值取样本段交给 `RingCandidateSelector.SelectByTemplate`）。闸门主判据自己的半窗是内建常量 `OnsetGate.GateSeconds`，不受本项影响；长铃还会再向前回溯最多 8s 找起点。</summary>
     public double ToleranceSeconds
     {
         get => _toleranceSeconds;
@@ -94,7 +94,7 @@ public class BellCalibrationSettings : INotifyPropertyChanged
     }
 
     private double _detectionSensitivity = 2.0;
-    /// <summary>识别灵敏度（语义由后续里程碑定稿，当前为占位值）。</summary>
+    /// <summary>识别灵敏度：突发能量判定为「有铃声」所需超过环境噪声底的倍数（见 RingDetector，越大越严格）。</summary>
     public double DetectionSensitivity
     {
         get => _detectionSensitivity;
@@ -139,7 +139,7 @@ public class BellCalibrationSettings : INotifyPropertyChanged
     // ── 模板匹配（v0.9.0）────────────────────────────────────────────────
 
     private bool _enableTemplateMatch = true;
-    /// <summary>启用铃声模板匹配（基于提供的铃声样本/模板 WAV 做波形与音色匹配）。关闭时回退启发式选铃。</summary>
+    /// <summary>启用铃声模板匹配（基于提供的铃声样本/模板 WAV 做波形与音色匹配）。关闭时仅使用起响沿闸门。</summary>
     public bool EnableTemplateMatch
     {
         get => _enableTemplateMatch;

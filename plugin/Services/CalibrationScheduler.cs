@@ -196,9 +196,36 @@ public class CalibrationScheduler : IDisposable
 
             var lead = TimeSpan.FromSeconds(BellTimeCalibrationPlugin.Config.ArmedLeadSeconds);
 
-            // 左时间 > lead 或已越界(<=0) → 清除本边界 armed 标志（新边界出现自动复位）
-            if (remaining <= TimeSpan.Zero || remaining > lead)
+            // 左时间 > lead → 还没进入布防区间（或已跨过整个窗口）：清除本边界 armed 标志
+            // （新边界出现时会自动重新布防）。注意这里**不含**「已越界」那一支，原因见下。
+            if (remaining > lead)
             {
+                _armed = false;
+                _pendingBoundaryKind = null;
+                _pendingBoundaryDisplay = null;
+                return;
+            }
+
+            // 已越界（remaining <= 0）：本 tick 与宿主的「状态切换」事件在抢跑。
+            // 正常顺序是事件先到（OnStateSwitched 发 BoundaryReached 并复位 armed），但事件晚于本 tick 时，
+            // 旧代码在这里直接把 armed 清掉，于是 OnStateSwitched 再也看不到 armed && pending 齐全，
+            // **BoundaryReached 永不触发** → CalibrationRunner 的 ReachedWallUtc 恒为 null →
+            // ShouldContinue() 恒真 → 捕获一直跑满硬超时（实测 2026-10-07 18:50 下课：EndedBy=hard-timeout、
+            // CaptureSec 55.03s，结构化历史里连 ReachedWall 都没有，事后无法判断这次到底等没等到切换）。
+            // 因此在这里**补发**一次越界事件：只要本窗口确实布防过、边界信息齐全，就先把事件抛出去再清标志。
+            // 幂等由订阅方保证：CalibrationRunner.OnBoundaryReached 只在 ReachedWallUtc == null 时写入，
+            // 事件先到的情况下这次补发不会覆盖已记下的越界时刻。
+            if (remaining <= TimeSpan.Zero)
+            {
+                if (_armed && _pendingBoundaryKind != null && _pendingBoundaryDisplay != null)
+                {
+                    Logger.Info(
+                        $"[校时] 边界 {_pendingBoundaryDisplay.Value:HH:mm:ss} 越界事件由主计时器补发" +
+                        "（宿主状态切换事件晚于本 tick，v1.0.5 兜底）。");
+                    BoundaryReached?.Invoke(this, new BoundaryReachedEventArgs(
+                        _pendingBoundaryKind, _pendingBoundaryDisplay.Value));
+                }
+
                 _armed = false;
                 _pendingBoundaryKind = null;
                 _pendingBoundaryDisplay = null;

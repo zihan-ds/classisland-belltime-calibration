@@ -63,10 +63,10 @@ public class CaptureWindowResult
 
 /// <summary>
 /// 麦克风捕获服务（M3）。
-/// 隐私红线：音频只做内存内 RMS 突发检测，绝不落盘、不写任何文件；
+/// 隐私：音频只做内存内 RMS 突发检测，本层不写任何文件（调试转存由 Runner 层按 DebugDumpAudio 写出）；
 /// 捕获仅在触发窗口内进行，结束后立即释放引擎与设备。
 /// 每个监听窗口在后台工作线程内新建引擎 + 捕获设备并在结束时机内 Dispose（规避线程亲和坑）。
-/// 本文件只产出内存统计结果，不落盘（结构化历史由 CalibrationHistory 在 Runner 层记录）。
+/// 本文件只产出内存统计结果（结构化历史与样本由 CalibrationHistory / OffsetSampleStore 在 Runner 层记录）。
 /// </summary>
 public static class MicCaptureService
 {
@@ -81,7 +81,7 @@ public static class MicCaptureService
     /// <param name="detector">突发检测器（每窗口新建）。</param>
     /// <param name="shouldContinue">是否继续捕获（约每 200ms 轮询一次；线程安全）。</param>
     /// <param name="hardTimeout">硬超时上限（= 布防提前量 + 窗口时长 + 15s），防止窗口永不结束。</param>
-    /// <param name="keepAudio">是否在内存中保留窗口音频（模板匹配需要；音频绝不落盘）。</param>
+    /// <param name="keepAudio">是否在内存中保留窗口音频（模板匹配与起响沿分析需要；本层不落盘）。</param>
     /// <returns>成功结束返回 <see cref="CaptureWindowResult"/>；初始化失败（无默认设备/设备被占用等）返回 null。</returns>
     public static Task<CaptureWindowResult?> CaptureAsync(
         RingDetector detector,

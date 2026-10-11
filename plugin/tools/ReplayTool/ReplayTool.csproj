@@ -31,6 +31,9 @@
     <!-- 退化口径换算（CorrectionPolicy.RequiredFromAbsolute）同样是纯函数，可离线断言
          （absolute-required-test 子命令直接断言生产代码本身，而不是另抄一份公式）。 -->
     <Compile Include="..\..\Services\CorrectionPolicy.cs" />
+    <!-- 「清除无用录音」的删除范围与失败处理（纯文件操作，不引用宿主类型）：
+         设置页按钮与 dumps-clear-test 断言的是同一份实现，避免「按钮删了什么」与「断言以为它删了什么」漂移。 -->
+    <Compile Include="..\..\Services\DumpCleaner.cs" />
   </ItemGroup>
 
 </Project>
