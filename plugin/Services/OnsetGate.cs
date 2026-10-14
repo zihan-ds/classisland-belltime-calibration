@@ -50,6 +50,19 @@ public static class OnsetGate
     /// </summary>
     public const double GateSeconds = 8.0;
 
+    /// <summary>
+    /// 锚定半窗（秒，v1.1.0）：给了锚点（模板命中位置）时，扫描区间收窄到「锚 ± 该值」。
+    ///
+    /// 为什么需要：闸门的「比值竞赛」在吵闹窗口里会被瞬态抢走（2026-10-14 全天多次：09:40 选中 100×、
+    /// 10:10 选中 188×，都落在人声/桌椅里，而同一窗口的模板命中位置另有其人）。模板匹配回答的是
+    /// 「这段波形就是我们的铃」，把它作为锚，比值竞赛就只剩「这一击的哪个采样是起声沿」这种毫秒级问题。
+    ///
+    /// 3.0 s 的取值依据：模板命中位置实测落在铃段**内部**而非起声处 —— 2026-10-14 08:10 命中在真起声后
+    /// 1.15 s、2026-10-12 20:00 在后 1.9 s（两次都用包络逐点核对过），最长实测偏差 &lt;2 s，留 1 s 余量。
+    /// 回溯到段起点仍由 <see cref="SegmentLookbackSeconds"/> 负责（模板不负责找第一击）。
+    /// </summary>
+    public const double AnchorApertureSeconds = 3.0;
+
     /// <summary>起响比值下限（倍）：起响后 0.5 s 峰值 RMS ÷ 起响前 0.3 s 基线 RMS。</summary>
     public const double RatioMin = 4.0;
 
@@ -189,14 +202,33 @@ public static class OnsetGate
     /// <param name="note">说明（中文，供日志；未命中时给出原因与最佳候选）。</param>
     /// <returns>命中返回起响点；未找到合格起响沿返回 null。</returns>
     public static OnsetHit? Find(CaptureAudio audio, DateTime boundaryWallLocal, out string note)
+        => Find(audio, boundaryWallLocal, null, out note);
+
+    /// <summary>
+    /// 同 <see cref="Find(CaptureAudio, DateTime, out string)"/>，但可给一个**锚点**（v1.1.0）：
+    /// 给了锚点（模板命中位置）就把扫描区间收窄到「锚 ± <see cref="AnchorApertureSeconds"/>」，
+    /// 于是比值竞赛只在铃附近进行，不会被窗内其它瞬态抢走。锚点只负责「圈定是哪一段」，
+    /// 起声沿定位（回溯 + 归位）与不给锚点时完全同一套代码。
+    /// </summary>
+    /// <param name="anchorWallLocal">锚点墙钟（本地）；null = 不给锚点（老行为）。</param>
+    public static OnsetHit? Find(CaptureAudio audio, DateTime boundaryWallLocal, DateTime? anchorWallLocal, out string note)
     {
         var rate = CaptureAudio.SampleRate;
         var baseSamples = (int)(BaselineSeconds * rate);
         var peakSamples = (int)(PeakSeconds * rate);
         var stepSamples = Math.Max(1, (int)(StepSeconds * rate));
 
-        var gateFrom = (int)((boundaryWallLocal - TimeSpan.FromSeconds(GateSeconds) - audio.AnchorWallLocal).TotalSeconds * rate);
-        var gateTo = (int)((boundaryWallLocal + TimeSpan.FromSeconds(GateSeconds) - audio.AnchorWallLocal).TotalSeconds * rate);
+        // 扫描区间：给锚点就围着锚点，否则围着本窗口中心（老行为）。
+        var fromLocal = anchorWallLocal == null
+            ? boundaryWallLocal - TimeSpan.FromSeconds(GateSeconds)
+            : anchorWallLocal.Value - TimeSpan.FromSeconds(AnchorApertureSeconds);
+        var toLocal = anchorWallLocal == null
+            ? boundaryWallLocal + TimeSpan.FromSeconds(GateSeconds)
+            : anchorWallLocal.Value + TimeSpan.FromSeconds(AnchorApertureSeconds);
+        var apertureText = anchorWallLocal == null ? $"边界 ±{GateSeconds:F1}s" : $"锚 ±{AnchorApertureSeconds:F1}s";
+
+        var gateFrom = (int)((fromLocal - audio.AnchorWallLocal).TotalSeconds * rate);
+        var gateTo = (int)((toLocal - audio.AnchorWallLocal).TotalSeconds * rate);
         var settle = (int)(RingCandidateSelector.SettleSkipSeconds * rate);
 
         gateFrom = Math.Max(gateFrom, settle);
@@ -204,7 +236,7 @@ public static class OnsetGate
 
         if (gateTo <= gateFrom)
         {
-            note = $"闸门区间无效（边界 ±{GateSeconds:F1}s 落在音频之外或静置期内）";
+            note = $"闸门区间无效（{apertureText} 落在音频之外或静置期内）";
             return null;
         }
 
@@ -318,7 +350,7 @@ public static class OnsetGate
             // v1.0.4：未命中说明改为**紧凑串**（原先一次 130+ 字，逐窗口写进日志很占地方）。
             // 但「基线静默候选」这个关键词必须保留：gate-guard 断言就靠它统计被门槛拦下的窗口。
             // 命中时的说明（下面那段）保持完整——它同时是结构化历史 GateNote 的内容。
-            note = $"未命中（最佳比值 {scanBest:F1}×／下限 {RatioMin:F1}×，区间峰值 {ToDb(scanPeakMax):F1} dBFS" +
+            note = $"未命中（区间 {apertureText}，最佳比值 {scanBest:F1}×／下限 {RatioMin:F1}×，区间峰值 {ToDb(scanPeakMax):F1} dBFS" +
                    (silentBaselineCandidates > 0 ? $"，已排除 {silentBaselineCandidates} 个基线静默候选" : "") +
                    (qualified.Count > 0 ? $"，{qualified.Count} 个合格候选都不在强候选组内" : "") + "）";
             return null;
@@ -414,7 +446,7 @@ public static class OnsetGate
             ? $"起响比值 {bestRatio:F1}×"
             : $"起响比值 {bestRatio:F1}×（＜下限 {RatioMin:F1}×，按「高声压起响」入选：峰值 {ToDb(bestPeak):F1} dBFS " +
               $"≥ {LoudPeakDb:F1}、抬升 ≥ {MinRiseDb:F1} dB）";
-        note = $"起响沿命中：边界 {(offsetSec >= 0 ? "+" : "")}{offsetSec:F2}s，{ratioText}" +
+        note = $"起响沿命中（区间 {apertureText}）：边界 {(offsetSec >= 0 ? "+" : "")}{offsetSec:F2}s，{ratioText}" +
                $"（峰值 {ToDb(bestPeak):F1} dBFS）；" +
                $"候选 {candidates.Count} 个 / 合格 {qualified.Count} 个（含高声压起响 {candidates.Count(c => c.Loud)} 个）" +
                $" / 强候选组 {strongCount} 个" +

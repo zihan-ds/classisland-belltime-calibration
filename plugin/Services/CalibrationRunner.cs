@@ -281,8 +281,10 @@ public class CalibrationRunner : IDisposable
                 window.StartWallUtc,
                 config);
 
+            // 硬超时同样按自适应提前量算（v1.1.0）：提前量随当前偏移变长时，
+            // 若这里还用配置里的下限，捕获会在真铃之前被超时掐掉。
             var hardTimeout = TimeSpan.FromSeconds(
-                config.ArmedLeadSeconds + config.WindowSeconds + 15);
+                CalibrationScheduler.CurrentLead().TotalSeconds + config.WindowSeconds + 15);
 
             // v0.9.0：启用模板匹配时保留窗口音频（仅内存），供模板匹配定位起响点
             var keepAudio = config.EnableTemplateMatch && TemplateLibrary.Templates.Count > 0;
@@ -377,8 +379,13 @@ public class CalibrationRunner : IDisposable
 
             var postSettle = RingCandidateSelector.ExcludeSettlePeriod(result.Bursts, window.StartWallUtc);
 
-            // 模板兜底路径的搜索半窗取配置项 ToleranceSeconds（默认 12s）；闸门主判据的半窗是 OnsetGate.GateSeconds 内建常量
-            var tolerance = TimeSpan.FromSeconds(config.ToleranceSeconds);
+            // 模板锚点/兜底路径的搜索半窗（v1.1.0 起自适应）：模板匹配问的是「这段波形是不是我们的铃」，
+            // 而真铃落在「标称边界 − 当前偏移」处 —— 用户实测「修正所需偏移可能超过 20 s」（2026-10-15），
+            // 固定 ±ToleranceSeconds（默认 12s）在这种窗口里既扫不到铃、又会把匹配命中按「起响点偏差 ≤ 半窗」滤掉，
+            // 锚点随之失效、闸门退回「比值竞赛」。故取 max(配置值, |当前偏移| + 8s)：偏移小时与旧行为完全一致，
+            // 偏移大时与捕获提前量同公式放大（CalibrationScheduler.CurrentLead），音频一定覆盖得到扫描区间。
+            var tolerance = TimeSpan.FromSeconds(Math.Max(
+                config.ToleranceSeconds, Math.Abs(_active?.CurrentOffsetSeconds ?? 0) + 8.0));
 
             // ── 钟域统一（v0.9.1）──
             // 音频时间戳与候选起响点全部来自 DateTime.UtcNow（裸墙钟域），而 B_display 含内核偏移。
@@ -410,10 +417,54 @@ public class CalibrationRunner : IDisposable
             // 课表窗口中心 = 标称边界的真实墙钟。显示域 = 真墙钟 + 偏移，且 B_wall = B_display − 偏移，
             // 故 B_display = B_wall + 偏移；当前偏移读数拿不到时按 0 处理（此时两窗口重合、天然一致）。
             var scheduleCenterLocal = boundaryWallLocal.AddSeconds(_active?.CurrentOffsetSeconds ?? 0);
+            // ── 模板锚点（v1.1.0）：先跑模板匹配，用命中位置给两个闸门窗口定锚 ──
+            // 依据（2026-10-14 全天离线复算）：闸门的「比值竞赛」在吵闹窗口里会被窗内瞬态抢走
+            // （09:40 选中 100×、10:10 选中 188×，都落在人声/桌椅里），而模板匹配回答的是「这段波形就是我们的铃」。
+            // 命中率实测只有约 1/4，所以它只当锚点：命中就把扫描收窄到锚 ± AnchorApertureSeconds（起声仍由回溯 + 归位定位），
+            // 没命中就完全按老行为走。锚点与两个窗口中心在同一墙钟域，因此对开窗、表窗都能用。
+            DateTime? templateOnsetUtc = null;
+            string templateNote = "";
+            DateTime? templateAnchorLocal = null;
+            if (keepAudio && result.Audio != null && TemplateLibrary.Templates.Count > 0)
+            {
+                var audio = result.Audio;
+                var settleSample = (int)(RingCandidateSelector.SettleSkipSeconds * CaptureAudio.SampleRate);
+                var boundaryUtc = boundaryWallLocal.ToUniversalTime();
+                var fromSample = Math.Max(settleSample, audio.SampleIndexAt(boundaryUtc - tolerance));
+                var toSample = Math.Min(audio.Length, audio.SampleIndexAt(boundaryUtc + tolerance));
+
+                var match = fromSample < toSample
+                    ? RingCandidateSelector.SelectByTemplate(
+                        TemplateLibrary.Templates, audio, fromSample, toSample,
+                        boundaryWallLocal, tolerance, config.MatchNccMin, config.MatchSpectralMin,
+                        out templateNote)
+                    : null;
+                if (fromSample >= toSample)
+                    templateNote = "搜索区间无效（音频缓冲不足）";
+
+                if (match != null)
+                {
+                    var matchedUtc = audio.WallTimeAt(match.Value.OnsetSampleIndex);
+                    templateAnchorLocal = matchedUtc?.ToLocalTime();
+                    templateOnsetUtc = matchedUtc;   // 保留「模板当测量」的老兜底语义（仅闸门未命中时才会被采用）
+                    rec.MatchedTemplate = match.Value.Label;
+                    rec.MatchNcc = Math.Round(match.Value.Ncc, 4);
+                    rec.MatchSpectral = Math.Round(match.Value.SpectralSim, 4);
+                    Logger.Info($"[校时] 模板匹配命中（{templateNote}）" +
+                                (templateAnchorLocal == null
+                                    ? "，但锚点墙钟换算失败，闸门按老行为扫。"
+                                    : $" → 作为闸门锚点（±{OnsetGate.AnchorApertureSeconds:F1}s）。"));
+                }
+                else
+                {
+                    Logger.Info($"[校时] 模板匹配未命中（{templateNote}）。");
+                }
+            }
+
             if (result.Audio != null && result.Audio.Length > 0)
             {
-                switchHitRaw = OnsetGate.Find(result.Audio, boundaryWallLocal, out gateNote);
-                scheduleHit = OnsetGate.Find(result.Audio, scheduleCenterLocal, out scheduleNote);
+                switchHitRaw = OnsetGate.Find(result.Audio, boundaryWallLocal, templateAnchorLocal, out gateNote);
+                scheduleHit = OnsetGate.Find(result.Audio, scheduleCenterLocal, templateAnchorLocal, out scheduleNote);
 
                 gateHit = OnsetGate.Reconcile(switchHitRaw, scheduleHit, out verdict, out reconcileNote);
 
@@ -479,41 +530,9 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            // ── 辅助路径：模板匹配（闸门未命中时才尝试，命中则省一次全区间扫描）──
-            // 模板匹配保留但降级：它在个别窗口能给出毫秒级起响点（9/11 21:30 下课铃 NCC 0.968），
-            // 但跨边界不稳定，故不作主判据。
-            DateTime? templateOnsetUtc = null;
-            string templateNote = "";
-            if (gateHit == null && keepAudio && result.Audio != null)
-            {
-                var audio = result.Audio;
-                var settleSample = (int)(RingCandidateSelector.SettleSkipSeconds * CaptureAudio.SampleRate);
-                var boundaryUtc = boundaryWallLocal.ToUniversalTime();
-                var fromSample = Math.Max(settleSample, audio.SampleIndexAt(boundaryUtc - tolerance));
-                var toSample = Math.Min(audio.Length, audio.SampleIndexAt(boundaryUtc + tolerance));
-
-                var match = fromSample < toSample
-                    ? RingCandidateSelector.SelectByTemplate(
-                        TemplateLibrary.Templates, audio, fromSample, toSample,
-                        boundaryWallLocal, tolerance, config.MatchNccMin, config.MatchSpectralMin,
-                        out templateNote)
-                    : null;
-                if (fromSample >= toSample)
-                    templateNote = "搜索区间无效（音频缓冲不足）";
-
-                if (match != null)
-                {
-                    templateOnsetUtc = audio.WallTimeAt(match.Value.OnsetSampleIndex);
-                    rec.MatchedTemplate = match.Value.Label;
-                    rec.MatchNcc = Math.Round(match.Value.Ncc, 4);
-                    rec.MatchSpectral = Math.Round(match.Value.SpectralSim, 4);
-                    Logger.Info($"[校时] 模板匹配命中（{templateNote}）。");
-                }
-                else
-                {
-                    Logger.Info($"[校时] 模板匹配未命中（{templateNote}）。");
-                }
-            }
+            // ── 辅助路径：模板匹配（v1.1.0 起已在上方先跑，兼作闸门锚点）──
+            // 语义未变：仍然只在闸门两窗都没给出测量（gateHit == null）时才把模板命中当测量用。
+            // 模板跨边界不稳定（命中率约 1/4），故不作主判据。
 
             // 路径 b：静置过滤后无任何候选段，且闸门与模板都没命中 → 无突发能量
             if (postSettle.Count == 0 && templateOnsetUtc == null && gateHit == null)
@@ -787,23 +806,40 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            // 大误差复核（v0.10.2 拒写；v1.0.4 追加人工复核提醒）：即便来源可信，
-            // 一次要改 3 s 以上也值得人工看一眼再动手。
-            // 用户要求「遇到较大误差时坚决不用脏值」——这里拒绝写入并把原因写进历史与日志，
-            // 同时弹出提醒：只写日志意味着用户完全不知情（2026-09-17 17:10 曾静默拦下一次 5.764 s 的改动）。
+            // 离群复核（v1.1.0）：**测量本身**与本批稳健拟合差得太远 → 拒写。
+            // 拦截点在拟合器里（见 DriftFitter.LastSampleWasOutlier），与「大误差」的区别是判据：
+            // 那个比「目标 − 当前偏移」（改动量），这个比「本次测量 − 稳健拟合」（可信度）。
+            if (_fitter.LastSampleWasOutlier)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = $"outlier（测得 {required.TotalSeconds:F3}s 相对稳健拟合离群，已拒写）；{_fitter.LastNote}";
+                sampleReason = SampleReason.Outlier;
+                Logger.Warn(
+                    $"[校时] 离群拒写：本次测得所需偏移 {required.TotalSeconds:F3}s 与稳健拟合 {_fitter.MedianSeconds:F3}s " +
+                    $"相差超过 ±{DriftFitter.OutlierRejectSeconds:F1}s，判为脏值 → 本次不写偏移。{_fitter.LastNote}");
+                return;
+            }
+
+            // 步进写入（v1.1.0，取代 v0.10.2~v1.0.5 的「大误差拒写」）：单次最多改 ±limitSeconds，
+            // 差多少都照走，只是分几个窗口走完 —— 用户口径「合法修正仍是 3s，偏移量可能超过 20s」，
+            // 拒写会让一次真实的大校准永远等不到人工确认，而步进最多几窗就到位。
+            // 人工复核提醒依旧弹出：用户要能看见「这一次只走了一小步」。
             var limitSeconds = config.LargeErrorLimitSeconds > 0
                 ? config.LargeErrorLimitSeconds
                 : DefaultLargeErrorLimitSeconds;
             var changeSeconds = Math.Abs(diff.TotalSeconds);
             if (changeSeconds > limitSeconds)
             {
-                rec.Gate = "skipped";
-                rec.GateNote = $"large-error（需改 {diff.TotalSeconds:F3}s ＞ ±{limitSeconds:F1}s，已拒写）";
-                sampleReason = SampleReason.LargeError;
+                var (applied, _) = CorrectionPolicy.StepTowards(currentOffset, target.TotalSeconds, limitSeconds);
+                var stepped = TimeSpan.FromSeconds(applied);
+                rec.Gate = "applied";
+                rec.GateNote = $"stepped（目标 {target.TotalSeconds:F3}s，差 {diff.TotalSeconds:F3}s ＞ ±{limitSeconds:F1}s，" +
+                               $"本次只写 {stepped.TotalSeconds:F3}s）；{_fitter.LastNote}";
+                sampleReason = SampleReason.Stepped;
                 Logger.Warn(
-                    $"[校时] 大误差复核：本次要把偏移从 {currentOffset:F3}s 改到 {target.TotalSeconds:F3}s" +
-                    $"（差 {diff.TotalSeconds:F3}s，超过 ±{limitSeconds:F1}s），**拒绝写入**。" +
-                    "常见原因：校铃钟被人工大规模校准、系统时钟跳变、或信号源切换。请人工确认后再决定是否放行。");
+                    $"[校时] 步进写入：本次要把偏移从 {currentOffset:F3}s 改到 {target.TotalSeconds:F3}s" +
+                    $"（差 {diff.TotalSeconds:F3}s，超过单次上限 ±{limitSeconds:F1}s），本次只写 {stepped.TotalSeconds:F3}s，下一窗口继续逼近。" +
+                    "常见原因：校铃钟被人工大规模校准、系统时钟跳变、或信号源切换。请人工确认铃况。");
 
                 _reviewNotifier?.NotifyLargeError(new BellReviewNotifyArgs
                 {
@@ -816,6 +852,8 @@ public class CalibrationRunner : IDisposable
                     NotificationEnabled = config.EnableReviewNotification,
                     Basis = basis
                 });
+
+                _active.Apply(stepped);
                 return;
             }
 

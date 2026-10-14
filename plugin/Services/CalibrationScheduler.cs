@@ -22,7 +22,35 @@ public class CalibrationScheduler : IDisposable
     private readonly ILessonsService _lessonsService;
     private readonly IExactTimeService _exactTimeService;
 
-    /// <summary>当前边界是否已布防（已触发过监听窗口）。每 tick 依据剩余时间现算复位。</summary>
+    /// <summary>
+    /// 布防提前量（v1.1.0 起**自适应**）。配置项 <c>ArmedLeadSeconds</c> 只是下限，实际取
+    /// <c>clamp(max(配置值, |当前偏移| + <see cref="CaptureMarginSeconds"/>), 配置值, <see cref="MaxLeadSeconds"/>)</c>。
+    ///
+    /// 为什么必须自适应：真铃落在 <c>B_display − 真偏移</c>，而布防区间是 <c>[B_display − 提前量, …]</c>。
+    /// 偏移一旦偏出提前量（用户口径：**偏移量可能超过 20 s**），整段真铃落在窗口之外，
+    /// 窗口里只剩房间噪声 → 拿不到能纠正它的测量 → 偏移永远回不来（自己把自己锁死在窗外）。
+    /// 提前量随当前偏移一起长，这条死锁就不存在了；多花的代价只是每次多录几秒音频。
+    /// </summary>
+    /// <returns>本次布防的提前量。</returns>
+    public static TimeSpan CurrentLead()
+    {
+        var configuredSeconds = BellTimeCalibrationPlugin.Config.ArmedLeadSeconds;
+        var offsetSeconds = Math.Abs(BellTimeCalibrationPlugin.OffsetApplier?.CurrentOffsetSeconds ?? 0);
+        return TimeSpan.FromSeconds(Math.Clamp(
+            Math.Max(configuredSeconds, offsetSeconds + CaptureMarginSeconds),
+            configuredSeconds,
+            MaxLeadSeconds));
+    }
+
+    /// <summary>自适应提前量在「当前偏移」之上多留的余量（秒）：盖住「本次测量前铃刚被人工挪动过」的落空。</summary>
+    public const double CaptureMarginSeconds = 10.0;
+
+    /// <summary>自适应提前量的上限（秒）：再多录就是浪费磁盘与内存，也超出模板/闸门的搜索能力。</summary>
+    public const double MaxLeadSeconds = 60.0;
+
+    /// <summary>
+    /// 当前边界是否已布防（已触发过监听窗口）。每 tick 依据剩余时间现算复位。
+    /// </summary>
     private bool _armed;
 
     /// <summary>布防时暂存的边界类型（中文“上课/下课”），供边界越过时随 <see cref="BoundaryReached"/> 抛出。</summary>
@@ -194,7 +222,7 @@ public class CalibrationScheduler : IDisposable
                     return;
             }
 
-            var lead = TimeSpan.FromSeconds(BellTimeCalibrationPlugin.Config.ArmedLeadSeconds);
+            var lead = CurrentLead();
 
             // 左时间 > lead → 还没进入布防区间（或已跨过整个窗口）：清除本边界 armed 标志
             // （新边界出现时会自动重新布防）。注意这里**不含**「已越界」那一支，原因见下。

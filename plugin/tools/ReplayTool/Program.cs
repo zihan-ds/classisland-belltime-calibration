@@ -60,6 +60,10 @@ public static class Program
         if (args.Length > 0 && string.Equals(args[0], "absolute-required-test", StringComparison.OrdinalIgnoreCase))
             return AbsoluteRequiredTest();
 
+        // v1.1.0 写入策略与估计器的回归断言（estimate-test）
+        if (args.Length > 0 && string.Equals(args[0], "estimate-test", StringComparison.OrdinalIgnoreCase))
+            return EstimateTest();
+
         // 整段包络（envelope <dump.wav> [步长秒]）：回答「这段时间里到底有什么声音」
         if (args.Length > 0 && string.Equals(args[0], "envelope", StringComparison.OrdinalIgnoreCase))
             return Envelope(args);
@@ -80,6 +84,7 @@ public static class Program
             Console.WriteLine("  ReplayTool gate-reconcile <dump.wav> [当时偏移秒]    # 打印开关窗口/课表窗口两套判据 + 复核结论");
             Console.WriteLine("  ReplayTool gate-reconcile-test <Dumps 目录>          # 断言双窗口复核（含开关窗口与课表窗口结论相反的样本）");
             Console.WriteLine("  ReplayTool absolute-required-test                    # 断言退化口径换算（残差 + 当前偏移 = 绝对所需偏移）");
+            Console.WriteLine("  ReplayTool estimate-test                             # 断言 v1.1.0：离群不入列/连续两次重开段/单次 3s 步进");
             return 1;
         }
 
@@ -127,21 +132,7 @@ public static class Program
 
         var tolerate = TimeSpan.FromSeconds(tolerance);
 
-        // ── 0) 起响沿闸门（v0.10.0 主路径）：与 CalibrationRunner 相同口径 ──
-        var gate = OnsetGate.Find(audio, boundaryWallLocal, out var gateNote);
-        if (gate != null)
-        {
-            var gateInDump = (gate.Value.OnsetUtc - anchorWallUtc).TotalSeconds;
-            var gateDelta = (boundaryWallLocal - gate.Value.OnsetUtc.ToLocalTime()).TotalSeconds;
-            Console.WriteLine($"起响沿闸门：命中（dump 内 {gateInDump:F3}s，delta={gateDelta:F3}s，比值 {gate.Value.Ratio:F1}×）");
-            Console.WriteLine($"  明细：{gateNote}");
-        }
-        else
-        {
-            Console.WriteLine($"起响沿闸门：未命中 —— {gateNote}");
-        }
-
-        // ── 1) 模板匹配（与 CalibrationRunner 相同：搜索区间 = 静置期后 ∧ 边界 ±半窗） ──
+        // ── 0) 模板匹配（v1.1.0：生产里先跑模板、拿命中位置当闸门锚点，这里同口径）──
         var boundaryUtc = boundaryWallLocal.ToUniversalTime();
         var settleSample = (int)(RingCandidateSelector.SettleSkipSeconds * CaptureAudio.SampleRate);
         var fromSample = Math.Max(settleSample, audio.SampleIndexAt(boundaryUtc - tolerate));
@@ -154,6 +145,40 @@ public static class Program
             : null;
         Console.WriteLine($"模板匹配：{(match != null ? $"命中 {match.Value.Label} @ {match.Value.OnsetSampleIndex / (double)CaptureAudio.SampleRate:F3}s NCC={match.Value.Ncc:F3} 音色={match.Value.SpectralSim:F3}" : "未命中")}");
         Console.WriteLine($"  明细：{note}");
+
+        DateTime? anchorLocal = match != null
+            ? audio.WallTimeAt(match.Value.OnsetSampleIndex)?.ToLocalTime()
+            : null;
+
+        // ── 1) 起响沿闸门：老行为与 v1.1.0 锚定行为**并排**打印（离线对照就是这两行的差）──
+        void PrintGate(string title, OnsetGate.OnsetHit? hit, string gateNote)
+        {
+            if (hit != null)
+            {
+                var inDump = (hit.Value.OnsetUtc - anchorWallUtc).TotalSeconds;
+                var delta = (boundaryWallLocal - hit.Value.OnsetUtc.ToLocalTime()).TotalSeconds;
+                Console.WriteLine($"{title}：命中（dump 内 {inDump:F3}s，delta={delta:F3}s，比值 {hit.Value.Ratio:F1}×）");
+                Console.WriteLine($"  明细：{gateNote}");
+            }
+            else
+            {
+                Console.WriteLine($"{title}：未命中 —— {gateNote}");
+            }
+        }
+
+        var gateOld = OnsetGate.Find(audio, boundaryWallLocal, out var gateOldNote);
+        PrintGate($"起响沿闸门（老行为：边界 ±{OnsetGate.GateSeconds:F1}s）", gateOld, gateOldNote);
+
+        var gate = gateOld;
+        if (anchorLocal != null)
+        {
+            gate = OnsetGate.Find(audio, boundaryWallLocal, anchorLocal, out var gateNote);
+            PrintGate($"起响沿闸门（v1.1.0 锚定：模板命中 ±{OnsetGate.AnchorApertureSeconds:F1}s）", gate, gateNote);
+        }
+        else
+        {
+            Console.WriteLine("起响沿闸门（v1.1.0 锚定）：无锚点（模板未命中）→ 与老行为完全一致");
+        }
         Console.WriteLine();
 
         var measuredByGate = gate != null;
@@ -646,6 +671,105 @@ public static class Program
         if (failed == 0)
         {
             Console.WriteLine("  退化口径断言全部通过（残差 + 当前偏移 = 所需绝对偏移）。");
+            return 0;
+        }
+
+        Console.WriteLine($"  断言失败 {failed} 项。");
+        return 8;
+    }
+
+    /// <summary>
+    /// v1.1.0 写入策略与估计器的回归断言（estimate-test）：
+    /// ① 单次写入钳制（<see cref="CorrectionPolicy.StepTowards"/>）与「分几步能走完 20 s」；
+    /// ② 离群样本**不入列但不清空样本段**（v1.0.5 的 JumpReset 会把整段历史抹掉）；
+    /// ③ 连续两次一致的新基准才重开样本段；
+    /// ④ 趋势门槛（6 样本 / 4 h / 残差 0.6 s）在该启用时启用、该拒绝时拒绝。
+    /// 断言的是**生产代码本身**，不是另抄一份公式。
+    /// </summary>
+    private static int EstimateTest()
+    {
+        var failed = 0;
+        void Check(bool ok, string what)
+        {
+            Console.WriteLine($"  [{(ok ? "通过" : "失败")}] {what}");
+            if (!ok)
+                failed++;
+        }
+
+        Console.WriteLine("① 单次写入钳制（目标差多少都走，一次最多 ±上限）");
+        var (fwd, fwdStepped) = CorrectionPolicy.StepTowards(0, 25, 3);
+        Check(Math.Abs(fwd - 3) < 1e-9 && fwdStepped, $"偏移 0 → 目标 +25s：本次写 {fwd:F3}s（步进={fwdStepped}）");
+        var (bwd, bwdStepped) = CorrectionPolicy.StepTowards(0, -25, 3);
+        Check(Math.Abs(bwd + 3) < 1e-9 && bwdStepped, $"偏移 0 → 目标 −25s：本次写 {bwd:F3}s（方向必须跟着目标走）");
+        var (exact, exactStepped) = CorrectionPolicy.StepTowards(0, 3, 3);
+        Check(Math.Abs(exact - 3) < 1e-9 && !exactStepped, $"差值恰等于上限：一次到位 {exact:F3}s（不算步进）");
+        var (inline, inlineStepped) = CorrectionPolicy.StepTowards(-3.3, -4.6, 3);
+        Check(Math.Abs(inline + 4.6) < 1e-9 && !inlineStepped, $"差值在限内：一次到位 {inline:F3}s");
+        var (free, freeStepped) = CorrectionPolicy.StepTowards(0, 50, 0);
+        Check(Math.Abs(free - 50) < 1e-9 && !freeStepped, $"上限 ≤ 0（配置关闭）：不限幅，一次写 {free:F3}s");
+
+        // 「偏移量可能超过 20 s」：从 0 走到 −20，每窗一步，几窗走完？
+        var steps = 0;
+        var current = 0.0;
+        while (steps < 20 && Math.Abs(current - (-20)) > 1e-9)
+        {
+            var (next, _) = CorrectionPolicy.StepTowards(current, -20, 3);
+            current = next;
+            steps++;
+        }
+        Check(Math.Abs(current + 20) < 1e-9 && steps == 7, $"0 → −20s 需要 {steps} 个窗口走完（每窗 3 s，期望 7）");
+
+        Console.WriteLine();
+        Console.WriteLine("② 离群不入列、但不清空样本段（v1.0.5 的 JumpReset 会抹掉整段历史）");
+        var baseAt = new DateTime(2026, 10, 15, 8, 0, 0);
+        var fitter = new DriftFitter();
+        fitter.Add(baseAt, TimeSpan.FromSeconds(-3.4));
+        fitter.Add(baseAt.AddHours(1), TimeSpan.FromSeconds(-3.5));
+        fitter.Add(baseAt.AddHours(2), TimeSpan.FromSeconds(-3.3));
+        Check(fitter.SampleCount == 3 && fitter.MedianSeconds is { } m0 && Math.Abs(m0 + 3.4) < 0.05,
+            $"建立基准：{fitter.SampleCount} 个样本，中位数 {fitter.MedianSeconds:F3}s");
+
+        fitter.Add(baseAt.AddHours(3), TimeSpan.FromSeconds(-12.0));
+        Check(fitter.LastSampleWasOutlier, "★ 与中位数差 8.6s（＞ 2.0s）的一次测量被判离群（调用方据此拒写）");
+        Check(fitter.SampleCount == 3, $"★ 样本段**没有被清空**，仍是 {fitter.SampleCount} 个（中位数保持稳健）");
+        Check(fitter.MedianSeconds is { } m1 && Math.Abs(m1 + 3.4) < 0.05, $"★ 中位数未被那条坏值拽动：{fitter.MedianSeconds:F3}s");
+
+        fitter.Add(baseAt.AddHours(4), TimeSpan.FromSeconds(-3.45));
+        Check(!fitter.LastSampleWasOutlier && fitter.SampleCount == 4, $"下一条正常测量入列：{fitter.SampleCount} 个样本");
+        Check(!fitter.LastSampleWasOutlier, "正常测量不会误判离群");
+
+        Console.WriteLine();
+        Console.WriteLine("③ 连续两次一致的新基准 → 重开样本段（人工校准 / 换信号源）");
+        fitter.Add(baseAt.AddHours(5), TimeSpan.FromSeconds(20.0));
+        Check(fitter.LastSampleWasOutlier && fitter.SampleCount == 4, $"第一条新基准先当离群挂起：{fitter.SampleCount} 个样本仍为旧段");
+        fitter.Add(baseAt.AddHours(6), TimeSpan.FromSeconds(20.2));
+        Check(fitter.SampleCount == 2, $"★ 第二条与它一致（差 0.2s）→ 重开样本段，{fitter.SampleCount} 个样本");
+        Check(fitter.MedianSeconds is { } m2 && Math.Abs(m2 - 20.1) < 0.05, $"新段中位数 {fitter.MedianSeconds:F3}s（期望 20.1）");
+
+        Console.WriteLine();
+        Console.WriteLine("④ 趋势门槛：6 样本 / 跨度 4h / 残差 0.6s");
+        var trend = new DriftFitter();
+        for (var i = 0; i < 6; i++)
+            trend.Add(baseAt.AddHours(i), TimeSpan.FromSeconds(-5.0 + 0.1 * i));
+        Check(trend.TrendEnabled, $"★ 6 个样本跨 5h、残差≈0 → 趋势启用（斜率 {trend.SlopeSecondsPerHour:F3} s/h）");
+        Check(trend.PredictSeconds(baseAt.AddHours(6)) is { } p1 && Math.Abs(p1 - (-4.75 + 0.1)) < 0.05,
+            $"趋势外推 1h 后：{trend.PredictSeconds(baseAt.AddHours(6)):F3}s（中位数 −4.75s + 斜率 0.1）");
+
+        var noisy = new DriftFitter();
+        for (var i = 0; i < 6; i++)
+            noisy.Add(baseAt.AddHours(i), TimeSpan.FromSeconds(i % 2 == 0 ? 0.0 : 1.5));
+        Check(!noisy.TrendEnabled && noisy.SampleCount == 6,
+            $"★ 散布 ±1.5s（残差 > 0.6s）时拒绝追趋势（{noisy.SampleCount} 个样本，TrendEnabled={noisy.TrendEnabled}）");
+
+        var few = new DriftFitter();
+        for (var i = 0; i < 5; i++)
+            few.Add(baseAt.AddHours(i), TimeSpan.FromSeconds(-5.0 + 0.1 * i));
+        Check(!few.TrendEnabled, $"只有 5 个样本 → 不启用趋势（门槛 {DriftFitter.TrendMinSamples} 个）");
+
+        Console.WriteLine();
+        if (failed == 0)
+        {
+            Console.WriteLine("  写入策略与估计器断言全部通过。");
             return 0;
         }
 

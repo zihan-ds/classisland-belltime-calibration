@@ -120,7 +120,7 @@ public sealed class HostNotificationSender
     {
         public string Name { get; set; } = "铃声校时复核";
 
-        public string Description { get; set; } = "校铃校时发现大误差或两次测量矛盾时，提醒人工复核。";
+        public string Description { get; set; } = "校铃校时一次改不完（分步写入）或两次测量矛盾时，提醒人工复核。";
 
         public Guid ProviderGuid { get; set; } = BellReviewNotificationIds.ProviderGuid;
 
@@ -206,7 +206,7 @@ public sealed class BellReviewNotifier
         {
             MaskContent = NotificationContent.CreateTwoIconsMask("铃声校时需人工复核", rightIcon: "\uE7BA"),
             OverlayContent = NotificationContent.CreateSimpleTextContent(
-                "这是一条测试提醒（来自设置页「发送测试提醒」）。真实的大误差复核提醒格式与此相同，" +
+                "这是一条测试提醒（来自设置页「发送测试提醒」）。真实的分步写入复核提醒格式与此相同，" +
                 "会写明边界时刻、当前偏移与测得所需偏移。")
         };
 
@@ -244,7 +244,8 @@ public sealed class BellReviewNotifier
             var text =
                 $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：本次测得所需偏移 {args.RequiredOffsetSeconds:F3}s，" +
                 $"与当前偏移 {args.CurrentOffsetSeconds:F3}s 相差 {args.ChangeSeconds:+0.000;-0.000;0.000}s" +
-                $"（超过 ±{args.LimitSeconds:F1}s），已拒绝写入。请人工确认铃况与校铃钟后再决定是否手动校准。{args.Basis}";
+                $"（超过 ±{args.LimitSeconds:F1}s），本次只写入 ±{args.LimitSeconds:F1}s（步进逼近，分几个窗口走完）。" +
+                $"请人工确认铃况与校铃钟：若确实发生了人工校准或换信号源，可直接手动校准。{args.Basis}";
 
             var request = new NotificationRequest
             {

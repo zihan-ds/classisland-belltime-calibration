@@ -21,12 +21,16 @@ namespace BellTimeCalibration.Services;
 /// 且「所需偏移」与当前偏移无关（只取决于铃的真实滞后），因此从任何起点都会收敛到同一值。</description></item>
 /// <item><description>样本窗口：优先只取最近 <see cref="WindowHours"/> 小时内的样本（漂移慢变，
 /// 旧样本会把已变化的基准拖住）；不足 <see cref="MinSamplesForWindow"/> 个时放宽到全部样本。</description></item>
-/// <item><description>跳变检测：新样本与当前中位数相差 &gt; <see cref="JumpResetSeconds"/> 秒时清空重开
-/// （人工校准 / 信号源切换）。中位数本身已抗单点噪声，故该阈值主要拦真实基准跳变。</description></item>
+/// <item><description><b>离群点不参与、但不清空样本段</b>（v1.1.0）：单个样本与稳健中位数相差
+/// &gt; <see cref="OutlierRejectSeconds"/> 秒时判为离群，<b>不入列</b>并置 <see cref="LastSampleWasOutlier"/>
+/// （由调用方决定拒写）；连续两次「彼此一致、但都远离旧段」的测量才认定基准真跳变、重开样本段。
+/// <para>为什么改：v1.0.5 用 <c>JumpResetSeconds=2.5</c> 一超差就 <c>_samples.Clear()</c>，
+/// 10-14 实测 10 次写入里 8 次退回「样本 1 个」的单点直写（中位数退化 = 没有稳健性），
+/// 而其中多数是干净测量被前面的坏值钉住。</para></description></item>
 /// <item><description><b>趋势外推默认关闭</b>，仅在「样本数 ≥ <see cref="TrendMinSamples"/>、
 /// 时间跨度 ≥ <see cref="TrendMinSpanHours"/> 小时、且拟合残差 &lt; <see cref="TrendMaxResidualSeconds"/> 秒」
 /// 三项同时成立时启用；斜率仍钳制在 ±<see cref="MaxSlopeSecondsPerHour"/>。
-/// 门槛的含义：只有噪声被平均到足以看出真实走时（残差 &lt;0.3 s）之后，才允许追趋势。</description></item>
+/// 门槛的含义：只有噪声被平均到足以看出真实走时之后，才允许追趋势。</description></item>
 /// </list>
 /// 不做线程同步的说明已作废（v1.0.4）：手动拟合（设置页按钮）会在 UI 线程上
 /// <see cref="Seed"/> 一份新序列，而捕获线程可能正在 <see cref="Add"/>，
@@ -44,29 +48,47 @@ public sealed class DriftFitter
     /// <summary>样本窗口内至少要有这么多个样本，否则放宽到全部样本。</summary>
     public const int MinSamplesForWindow = 3;
 
-    /// <summary>跳变阈值（秒）：新样本与当前中位数之差超过该值即重开样本段（人工校准/新基准）。</summary>
-    public const double JumpResetSeconds = 2.5;
+    /// <summary>
+    /// 离群判定阈值（秒，v1.1.0 取代 <c>JumpResetSeconds</c>）：样本与当前稳健中位数之差超过该值时
+    /// 判为离群 —— 不入列、并置 <see cref="LastSampleWasOutlier"/>，但**不清空样本段**。
+    /// 取 2.0 s 的依据：判据（起响沿闸门）实测散布 ±1.5 s，2.0 s 以外已经不是「同一次测量」的抖动范围。
+    /// </summary>
+    public const double OutlierRejectSeconds = 2.0;
 
-    /// <summary>启用趋势外推所需的最少样本数。</summary>
-    public const int TrendMinSamples = 12;
+    /// <summary>认定基准跳变（人工校准/换信号源）所需的**连续**离群次数（v1.1.0）。</summary>
+    public const int SegmentRestartAgreements = 2;
 
-    /// <summary>启用趋势外推所需的最小时间跨度（小时）。</summary>
-    public const double TrendMinSpanHours = 6.0;
+    /// <summary>上述连续两次离群样本彼此之间允许的最大差（秒）：它们要指向同一个新基准才算数。</summary>
+    public const double SegmentRestartAgreementSeconds = 1.0;
 
-    /// <summary>启用趋势外推允许的最大拟合残差（秒）：残差大于该值说明散布仍以噪声为主，不追趋势。</summary>
-    public const double TrendMaxResidualSeconds = 0.3;
+    /// <summary>启用趋势外推所需的最少样本数（v1.1.0：12 → 6，让「当天就能启用」成为常态）。</summary>
+    public const int TrendMinSamples = 6;
+
+    /// <summary>启用趋势外推所需的最小时间跨度（小时，v1.1.0：6 → 4）。</summary>
+    public const double TrendMinSpanHours = 4.0;
+
+    /// <summary>启用趋势外推允许的最大拟合残差（秒，v1.1.0：0.3 → 0.6）：残差大于该值说明散布仍以噪声为主，不追趋势。</summary>
+    public const double TrendMaxResidualSeconds = 0.6;
 
     /// <summary>斜率上限（秒/小时）：钳制以抑制噪声样本导致的虚假走时速率。</summary>
     public const double MaxSlopeSecondsPerHour = 2.0;
 
-    /// <summary>趋势启用时的最大外推时长（小时）：预测点距最后一个样本不超过该值。</summary>
-    public const double MaxExtrapolationHours = 2.0;
+    /// <summary>趋势启用时的最大外推时长（小时，v1.1.0：2 → 24）：只做温和外推，钳制与外推挂钩，
+    /// 把「过夜后第一窗」也纳入（旧值 2 h 让跨夜预测直接退回中位数，白丢趋势）。</summary>
+    public const double MaxExtrapolationHours = 24.0;
 
     /// <summary>批次导入时的默认时间间隔（秒）：历史文件只存时刻与所需偏移，
     /// 导入时按此间隔递增，避免「同一时刻多个样本」把时间跨度算成 0（仅影响趋势门槛判定）。</summary>
     private const double ImportedSampleSpacingSeconds = 1.0;
 
     private readonly List<(DateTime At, double OffsetSec)> _samples = new();
+
+    /// <summary>
+    /// 待确认的「新基准」候选（v1.1.0）：第一条离群样本记在这里，若下一条测量与它一致
+    /// （差值 ≤ <see cref="SegmentRestartAgreementSeconds"/>）则认定基准跳变、以这两条重开样本段；
+    /// 否则被后续正常测量冲掉。
+    /// </summary>
+    private (DateTime At, double Sec)? _pending;
 
     /// <summary>
     /// 串行化所有样本读写（v1.0.4）：手动拟合走 UI 线程，校准走捕获线程，
@@ -91,6 +113,7 @@ public sealed class DriftFitter
         lock (_sync)
         {
             _samples.Clear();
+            _pending = null;
             var count = 0;
             var lastAt = DateTime.MinValue;
             foreach (var (at, required) in history)
@@ -154,6 +177,17 @@ public sealed class DriftFitter
         private set => _slopeSecondsPerHour = value;
     }
 
+    private bool _lastSampleWasOutlier;
+    /// <summary>
+    /// 最近一次 <see cref="Add"/> 的样本是否被判为离群（未入列）。调用方据此**拒写**本次偏移
+    /// （v1.1.0：脏值的拦截点从「目标与当前之差」搬到「测量与本批拟合之差」）。
+    /// </summary>
+    public bool LastSampleWasOutlier
+    {
+        get { lock (_sync) { return _lastSampleWasOutlier; } }
+        private set => _lastSampleWasOutlier = value;
+    }
+
     private string? _lastNote;
     /// <summary>最近一次操作的说明（中文，供日志）。</summary>
     public string? LastNote
@@ -180,16 +214,45 @@ public sealed class DriftFitter
         lock (_sync)
         {
             var sec = requiredOffset.TotalSeconds;
+            LastSampleWasOutlier = false;
 
-            // 跳变检测：与当前中位数比对（中位数已抗单点噪声，故这里拦的是真实基准跳变）
+            // v1.1.0：离群样本「不入列」而不是「清空样本段」——旧行为一次坏测量就把整段历史抹掉，
+            // 于是此后每次写入都退化成单点直写（中位数的稳健性全没了）。
             var priorMedian = _medianSeconds;
-            if (priorMedian.HasValue && Math.Abs(sec - priorMedian.Value) > JumpResetSeconds)
+            var farFromSegment = priorMedian.HasValue
+                                 && _samples.Count >= MinSamplesForWindow
+                                 && Math.Abs(sec - priorMedian.Value) > OutlierRejectSeconds;
+
+            if (farFromSegment)
             {
+                var pending = _pending;
+                var agreesWithPending = pending.HasValue
+                                        && (atLocal - pending.Value.At).TotalHours <= WindowHours
+                                        && Math.Abs(sec - pending.Value.Sec) <= SegmentRestartAgreementSeconds;
+
+                if (!agreesWithPending)
+                {
+                    _pending = (atLocal, sec);
+                    LastSampleWasOutlier = true;
+                    Recompute();
+                    AppendNote($"离群拒用：{sec:F3}s 与稳健中位数 {priorMedian!.Value:F3}s 相差 " +
+                               $"{sec - priorMedian.Value:F3}s（＞ {OutlierRejectSeconds:F1}s）→ 本次不参与拟合，" +
+                               $"待下一次测量确认是否为新基准（已累计 1/{SegmentRestartAgreements} 次）");
+                    return;
+                }
+
+                // 连续两次一致且都远离旧段 → 认定基准真跳变，用这两条新样本重开样本段
                 _samples.Clear();
-                LastNote = $"样本 {sec:F3}s 与当前中位数 {priorMedian.Value:F3}s 相差 {sec - priorMedian.Value:F3}s" +
-                           $"（＞跳变阈值 {JumpResetSeconds:F1}s）→ 判定人工校准/新基准，重置样本段";
+                _samples.Add(pending!.Value);
+                _samples.Add((atLocal, sec));
+                _pending = null;
+                Recompute();
+                AppendNote($"基准跳变确认：连续 {SegmentRestartAgreements} 次测量（{pending.Value.Sec:F3}s / {sec:F3}s）" +
+                           $"一致且都远离旧基准（旧中位数 {priorMedian!.Value:F3}s）→ 已重开样本段");
+                return;
             }
 
+            _pending = null;   // 与当前段一致的测量会冲掉待确认候选
             _samples.Add((atLocal, sec));
             if (_samples.Count > MaxSamples)
             {
@@ -198,6 +261,13 @@ public sealed class DriftFitter
 
             Recompute();
         }
+    }
+
+    /// <summary>把一句话并到 <see cref="LastNote"/> 末尾（保留 <see cref="Recompute"/> 写下的统计说明）。</summary>
+    private void AppendNote(string sentence)
+    {
+        var tail = _lastNote;
+        _lastNote = string.IsNullOrEmpty(tail) ? sentence : $"{sentence}｜{tail}";
     }
 
     /// <summary>

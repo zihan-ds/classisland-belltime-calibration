@@ -61,23 +61,25 @@ public class BellCalibrationSettings : INotifyPropertyChanged
 
     private double _largeErrorLimitSeconds = 3.0;
     /// <summary>
-    /// 大误差复核阈值（秒，v1.0.4）：本次要写入的偏移与当前偏移相差超过此值时**拒绝写入，并向用户弹出人工复核提醒**。
-    /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；出现更大的值通常意味着校铃钟被人工大规模校准过、
-    /// 或系统时钟发生跳变 —— 两种情况都值得人工看一眼，而不是让插件静静地把偏移改掉几秒。
-    /// 用户要求：**遇到较大误差时坚决不用脏值**。
+    /// 单次写入上限（秒）：v1.0.4 起是「大误差拒写阈值」，v1.1.0 起改为**步进上限** —— 本次要写入的偏移
+    /// 与当前偏移相差超过此值时，不再整笔拒写，而是只按上限写一步（分几个边界走完），并弹出人工复核提醒。
+    /// 依据：收敛状态下实测误差的观测范围是 −1.97~+1.23 s；值更大通常意味着校铃钟被人工大规模校准过、
+    /// 或系统时钟发生跳变 —— 分步逼近既不会让插件一次把偏移改飞，也不必让人工盯着（2026-10-14 实测：
+    /// 8 条「大误差」里多数是被一条坏值钉住的干净测量，真正需要人工介入的几乎没有）。
+    /// 用户要求：**合法修正保持单次 3 s，但所需偏移量可能超过 20 s**（分步走完，而不是拒写）。
     /// </summary>
     public double LargeErrorLimitSeconds
     {
         get => _largeErrorLimitSeconds;
-        // 上限 120 秒：本判定同时是「是否弹复核提醒」的阈值，给足余量但绝不允许把大误差保护整体关掉
+        // 上限 120 秒：本判定同时是「是否弹复核提醒」的阈值，给足余量但绝不允许把它整体关掉（下限 1 秒 = 每窗口走一步）
         set { _largeErrorLimitSeconds = Math.Clamp(value, 1.0, 120.0); OnPropertyChanged(); }
     }
 
     private bool _enableReviewNotification = true;
     /// <summary>
-    /// 人工审核提醒开关（v1.0.4）：关闭后大误差**仍然拒绝写入**，但不再弹出界面提醒（只记日志）。
-    /// 与「是否拒写」无关——拒写是数据安全底线，提醒只是可选的打扰；
-    /// 关掉后每个边界的大误差都只留日志，因此不再需要额外的冷却机制。
+    /// 人工审核提醒开关（v1.0.4）：关闭后**超出单次上限的步进写入仍然照常分步进行**，只是不再弹出界面提醒（只记日志）。
+    /// 与「是否步进」无关——限幅是数据安全底线，提醒只是可选的打扰；
+    /// 关掉后每个边界的步进都只留日志，因此不再需要额外的冷却机制。
     /// </summary>
     public bool EnableReviewNotification
     {
@@ -86,7 +88,7 @@ public class BellCalibrationSettings : INotifyPropertyChanged
     }
 
     private double _toleranceSeconds = 12;
-    /// <summary>铃响搜索半窗（±秒）：**模板兜底路径**的搜索半窗，只在闸门未命中时才用（`CalibrationRunner.cs:492-498` 以课表标称边界为中心 ±该值取样本段交给 `RingCandidateSelector.SelectByTemplate`）。闸门主判据自己的半窗是内建常量 `OnsetGate.GateSeconds`，不受本项影响；长铃还会再向前回溯最多 8s 找起点。</summary>
+    /// <summary>模板搜索半窗（±秒，**下限**）：v1.1.0 起每个保留下音频的窗口都先跑模板匹配，命中即给闸门定锚（`CalibrationRunner.cs` 的模板锚点段）。实际半窗取 `max(本项, |当前偏移| + 8s)` —— 偏移可能超过 20 s，固定半窗会既扫不到铃、又把命中按「偏差 ≤ 半窗」滤掉。闸门主判据自身的半窗是内建常量 `OnsetGate.AnchorApertureSeconds`（有锚点 ±3s）或 `OnsetGate.GateSeconds`（无锚点 ±8s），不受本项影响；长铃还会再向前回溯最多 8s 找起点。</summary>
     public double ToleranceSeconds
     {
         get => _toleranceSeconds;

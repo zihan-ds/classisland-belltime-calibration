@@ -129,7 +129,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             {
                 summary.Text = $"当天 {today.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
                                $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
-                               $"{(rejected > 0 ? $"，大误差拒写 {rejected} 条默认不参与（可手动勾上）" : "")}" +
+                               $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 条默认不参与（可手动勾上）" : "")}" +
                                $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条默认不参与（判据没拿到开关窗口测量，只留课表窗口坐标/冲突记录，确认可信再勾）" : "")}" +
                                $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{note}";
             }

@@ -29,6 +29,18 @@ public enum SampleReason
     /// <summary>差值超过大误差阈值 → 拒写、默认不参与（防一次错误测量把偏移拽飞）。</summary>
     LargeError,
 
+    /// <summary>
+    /// v1.1.0：测量与稳健拟合差得太远（相对离群）→ 拒写、默认不参与。
+    /// 与 <see cref="LargeError"/> 的区别是判据：那个比的是「目标与当前偏移」，这个比的是「测量与本批拟合」。
+    /// </summary>
+    Outlier,
+
+    /// <summary>
+    /// v1.1.0：目标是合法的（非离群），但「目标 − 当前」超过单次写入上限 → 只写上限那么多，下次窗口继续逼近。
+    /// <c>Applied = true</c>（确实写了），默认参与拟合。
+    /// </summary>
+    Stepped,
+
     /// <summary>只有课表窗口命中（v1.0.5）→ 旁证：不写偏移、默认不参与。</summary>
     SideSchedule,
 
@@ -162,6 +174,8 @@ public static class OffsetSampleStore
         SampleReason.Applied => "写入过",
         SampleReason.DeadZone => "死区带内（未写）",
         SampleReason.LargeError => "大误差拒写",
+        SampleReason.Outlier => "离群拒写",
+        SampleReason.Stepped => "步进写入",
         SampleReason.SideSchedule => "仅课表命中（旁证）",
         SampleReason.SideConflict => "双窗口冲突（旁证）",
         _ => sample.Applied ? "写入过"
@@ -175,6 +189,8 @@ public static class OffsetSampleStore
         SampleReason.Applied => "applied",
         SampleReason.DeadZone => "dead-zone",
         SampleReason.LargeError => "large-error",
+        SampleReason.Outlier => "outlier",
+        SampleReason.Stepped => "stepped",
         SampleReason.SideSchedule => "side-schedule",
         SampleReason.SideConflict => "side-conflict",
         _ => ""
@@ -186,6 +202,8 @@ public static class OffsetSampleStore
         "applied" => SampleReason.Applied,
         "dead-zone" => SampleReason.DeadZone,
         "large-error" => SampleReason.LargeError,
+        "outlier" => SampleReason.Outlier,
+        "stepped" => SampleReason.Stepped,
         "side-schedule" => SampleReason.SideSchedule,
         "side-conflict" => SampleReason.SideConflict,
         _ => SampleReason.Unknown
@@ -343,7 +361,7 @@ public static class OffsetSampleStore
             var sideOnes = result.Count(x => x.IsSideEvidence);
             note = $"载入当天样本 {result.Count} 个（参与手动拟合 {eligible} 个" +
                    $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 个默认参与" : "")}" +
-                   $"{(rejected > 0 ? $"，大误差拒写 {rejected} 个默认不参与" : "")}" +
+                   $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 个默认不参与" : "")}" +
                    $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 个默认不参与（可手动勾上）" : "")}" +
                    $"{(userOverridden > 0 ? $"，人工调整过 {userOverridden} 个" : "")}；" +
                    $"跳过其它日期 {skippedOtherDays} 个{(unparsed > 0 ? $"，无法解析 {unparsed} 行" : "")}）";

@@ -35,6 +35,31 @@ public class CorrectionPolicy
     public static TimeSpan RequiredFromAbsolute(TimeSpan deltaAbs, double currentOffsetSeconds)
         => deltaAbs + TimeSpan.FromSeconds(currentOffsetSeconds);
 
+    /// <summary>
+    /// 单次写入的钳制（v1.1.0，取代 v0.10.2 起的「大误差一律拒写」）。
+    ///
+    /// <para>阈值 <paramref name="limitSeconds"/> 的语义由「拒写线」改成「单步上限」：目标与当前相差多少都照走，
+    /// 但一次最多走 <paramref name="limitSeconds"/>，剩下的留给下一个监听窗口 ——
+    /// 用户口径「合法修正仍保持 3 s，偏移量可能超过 20 s」。拒写会让一次真实的大校准永远等不到人工确认
+    /// （2026-10-14 实测：8 条大误差里多数是被坏值钉住的干净测量，真正需要人工介入的几乎没有）。</para>
+    ///
+    /// <para>方向由 <paramref name="targetSeconds"/> − <paramref name="currentSeconds"/> 的符号决定，
+    /// 因此「目标更早」和「目标更晚」走的是同一段代码；差值恰好等于上限时不算步进（一次到位）。</para>
+    /// </summary>
+    /// <param name="currentSeconds">当前偏移（秒）。</param>
+    /// <param name="targetSeconds">本次目标偏移（秒）。</param>
+    /// <param name="limitSeconds">单次写入上限（秒，≤0 视为不限）。</param>
+    /// <returns>AppliedSeconds = 本次真正写入的偏移（秒）；Stepped = 是否被钳制（没走完）。</returns>
+    public static (double AppliedSeconds, bool Stepped) StepTowards(
+        double currentSeconds, double targetSeconds, double limitSeconds)
+    {
+        var diff = targetSeconds - currentSeconds;
+        if (limitSeconds <= 0 || Math.Abs(diff) <= limitSeconds)
+            return (targetSeconds, false);
+
+        return (currentSeconds + Math.Sign(diff) * limitSeconds, true);
+    }
+
     private const int HistoryCap = 20;
 
     private readonly List<TimeSpan> _history = new();

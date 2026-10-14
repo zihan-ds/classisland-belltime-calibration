@@ -54,7 +54,7 @@
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="8">
           <TextBlock Text="手动拟合" FontSize="15" FontWeight="Bold"/>
-          <TextBlock Text="按当天参与拟合的样本（默认含两类：判据写入过的、以及落在死区带内没写的；大误差拒写的、以及旁证样本都默认不计入，可在下方样本管理里手动勾上）重新分析一次，并立即把结果写入「应用设置 → 时钟 → 时间偏移」。此动作无视总开关、学习模式与自动应用开关 —— 按下即写。"
+          <TextBlock Text="按当天参与拟合的样本（默认含三类：判据写入过的、落在死区带内没写的、以及分步写入的；离群拒写的、以及旁证样本都默认不计入，可在下方样本管理里手动勾上）重新分析一次，并立即把结果写入「应用设置 → 时钟 → 时间偏移」。此动作无视总开关、学习模式与自动应用开关 —— 按下即写。"
                      Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <Grid ColumnDefinitions="Auto,*">
@@ -70,7 +70,7 @@
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="8">
           <TextBlock Text="样本管理" FontSize="15" FontWeight="Bold"/>
-          <TextBlock Text="列出当天已落盘的样本。勾选 = 参与「手动拟合并应用」的拟合；取消勾选 = 不参与。默认勾选：判据写入过的勾选，落在死区带内没写的也勾选（当时已经够准所以没动偏移，测量同样干净），大误差拒写的与旁证样本（仅课表窗口命中、或双窗口冲突，可信度打折、默认不参与）默认不勾选。人工随时可改，且人工结论优先；人工勾上的样本即使当初没被写入过也会参与。此标记只影响手动拟合，不改动自动应用链路的内部样本序列。「判据位置」列显示这笔样本当时被写/没写的真实原因：写入过 / 死区带内（未写）/ 大误差拒写 / 仅课表命中（旁证）/ 双窗口冲突（旁证）；v1.0.4 及更早的旧样本没有原因字段，显示为「拒写（旧数据，原因未记）」。"
+          <TextBlock Text="列出当天已落盘的样本。勾选 = 参与「手动拟合并应用」的拟合；取消勾选 = 不参与。默认勾选：判据写入过的勾选，落在死区带内没写的也勾选（当时已经够准所以没动偏移，测量同样干净），分步写入的也勾选（同一次干净测量，只是没一次走完），离群拒写的与旁证样本（仅课表窗口命中、或双窗口冲突，可信度打折、默认不参与）默认不勾选。人工随时可改，且人工结论优先；人工勾上的样本即使当初没被写入过也会参与。此标记只影响手动拟合，不改动自动应用链路的内部样本序列。「判据位置」列显示这笔样本当时被写/没写的真实原因：写入过 / 死区带内（未写）/ 步进写入 / 离群拒写 / 仅课表命中（旁证）/ 双窗口冲突（旁证）/ 大误差拒写（v1.0.5 旧数据）；v1.0.4 及更早的旧样本没有原因字段，显示为「拒写（旧数据，原因未记）」。"
                      Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <Grid ColumnDefinitions="Auto,*">
@@ -159,8 +159,8 @@
 
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
-              <TextBlock Text="大误差复核阈值（秒）" FontSize="13"/>
-              <TextBlock Text="本次所需偏移与当前偏移相差超过此值时拒绝写入，并在屏幕上弹出提醒要求人工复核（默认 3；改完即生效，无需重启）"
+              <TextBlock Text="单次写入上限（秒）" FontSize="13"/>
+              <TextBlock Text="本次所需偏移与当前偏移相差超过此值时只写 ±此值（分步逼近，日志记 stepped），并在屏幕上弹出提醒要求人工复核（默认 3；改完即生效，无需重启）。所需偏移超过 20s 时靠接连几个边界走完，不会一次把偏移改飞"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -170,8 +170,8 @@
 
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
-              <TextBlock Text="人工审核提醒（拒写时弹窗）" FontSize="13"/>
-              <TextBlock Text="关闭后「大误差拒写」与「双窗口冲突不写」仍然照旧发生，只是都不再弹出界面提醒（只记日志）。拒写是数据安全底线，提醒只是可选的打扰"
+              <TextBlock Text="人工审核提醒（分步写入时弹窗）" FontSize="13"/>
+              <TextBlock Text="关闭后「分步写入」与「双窗口冲突不写」仍然照旧发生，只是都不再弹出界面提醒（只记日志）。单次写入限幅是数据安全底线，提醒只是可选的打扰"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <CheckBox Grid.Column="1" VerticalAlignment="Center"
@@ -286,8 +286,8 @@
           </Grid>
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
-              <TextBlock Text="大误差复核提醒" FontSize="13"/>
-              <TextBlock Text="大误差或两次测量冲突被拒写时会弹提醒要求人工复核（没有冷却；可在「设置 → 提醒 → 铃声校时复核」里单独开关或调整）。大误差是低频事件，这里可先发一条测试提醒确认能正常弹出"
+              <TextBlock Text="复核提醒" FontSize="13"/>
+              <TextBlock Text="分步写入（一次改不完）或两次测量冲突时会弹提醒要求人工复核（没有冷却；可在「设置 → 提醒 → 铃声校时复核」里单独开关或调整）。这类事件低频，这里可先发一条测试提醒确认能正常弹出"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <Button Grid.Column="1" VerticalAlignment="Center" Content="发送测试提醒" Click="OnTestReviewNotification"/>
