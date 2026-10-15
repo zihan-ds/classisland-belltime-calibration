@@ -7,7 +7,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.1.0** |
+| 版本 | **1.1.0.0**（四段，与发布 tag `1.1.0.0` 一致） |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 状态 | 学习模式默认开启；建议先用学习模式观察数日再启用自动应用 |
 
@@ -269,9 +269,10 @@ dotnet build -c Release          # 输出 bin\Release\net8.0\
 
 - 工程引用 `ClassIsland.PluginSdk 2.0.0.2`（`ExcludeAssets=runtime`）与 `SoundFlow 1.4.1`。
 - 由于 SDK 的 `ExcludeAssets=runtime` 会沿依赖闭合压制托管运行时拷贝，csproj 对 `SoundFlow.dll` 与 `miniaudio.dll` 做了显式拷贝（含根因注释）——不要删这两行。
-- `.cipx` 打包（可选，给自己或别人装到另一台机器时用；本仓的 v1.1.0 流程不再产出迁移包）：
-  把 `bin\Release\net8.0` 下 `manifest.yml` + `BellTimeCalibration.dll` + `SoundFlow.dll` + `miniaudio.dll` + 资源（不含 `.pdb`）
-  压入 zip 根目录，扩展名改为 `.cipx`。产物样例：`artifacts\BellTimeCalibration-1.1.0.0.cipx`。
+- `.cipx` 打包（v1.1.0.0 起由 SDK 自带的打包目标生成，**不在本机手工压 zip**）：
+  `dotnet build plugin/BellTimeCalibration.csproj -c Release -p:CreateCipx=true` → 产物 `plugin/cipx/BellTimeCalibration.cipx`
+  （同时生成 `plugin/cipx/checksums.md`，里面的 MD5 就是市场索引要的 `CLASSISLAND_PKG_MD5`）。
+  CI 里同一条命令；打 `a.b.c.d` 形式的 tag 时由 `.github/workflows/release.yml` 自动发 Release 并附上这个 `.cipx`。
 
 ## 目录结构
 

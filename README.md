@@ -8,7 +8,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.1.0** |
+| 版本 | **1.1.0.0**（四段，与发布 tag `1.1.0.0` 一致） |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 平台 | Windows（miniaudio/WASAPI，需要可用的默认输入设备） |
 | 本版本更新 | **[更新说明-v1.1.0.md](更新说明-v1.1.0.md)**（全部功能更新、设置项、验证方式） |
@@ -199,7 +199,7 @@ plugin/                       插件源码（.NET 8）
                               gate-guard / estimate-test / dumps-clear-test 七套离线断言
 
 docs/HANDOFF.md               开发交接记录（含完整调试历程与实测数据）
-更新说明-v1.1.0.md             本版本（1.1.0）全部功能更新、设置项对照与验证方式
+更新说明-v1.1.0.md             本版本（1.1.0.0）全部功能更新、设置项对照与验证方式
 迁移与推送.md                  本地 git 推送指引（v1.1.0 起不再产出迁移包）
 tools-harvest.ps1             批量收割录音里的铃声段并互为对照
 ```

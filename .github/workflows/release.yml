@@ -58,10 +58,11 @@ jobs:
           # Release 正文 = 本版本的更新说明（去掉文件自身的 H1 标题，标题已是 Release 的 v$tag）；
           # 末尾必须保留 CLASSISLAND_PKG_MD5 注释，插件市场索引依赖它。
           $md5Comment = (Get-Content plugin/cipx/checksums.md -Raw).Trim()
-          # 说明文件按「三段版本号」命名（如 1.0.4），tag 是四段（1.0.4.0），故两者都要试。
-          $notes = @("更新说明-v$tag.md") | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $notes) { $notes = "更新说明-v$($tag -replace '\.0$').md" }
-          if (-not (Test-Path $notes)) { throw "找不到 $tag 对应的更新说明文件（已试 更新说明-v$tag.md 与 $notes），Release 正文无法生成" }
+          # 版本号一律四段：tag 是 1.1.0.0；说明文件按既有惯例用三段名（更新说明-v1.1.0.md，
+          # 与历史 更新说明-v1.0.4.md / v1.0.5.md 同一格式）。先按四段名找，再退到三段名。
+          $candidates = @("更新说明-v$tag.md", "更新说明-v$($tag -replace '\.0$').md")
+          $notes = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $notes) { throw "找不到 $tag 对应的更新说明文件（已试 $($candidates -join ' 与 ')），Release 正文无法生成" }
           # 该文件里另有 3 行以 '# ' 开头的内容位于 bash 代码块内，
           # 所以只能丢掉第 1 行，不能用 /^# / 起头过滤（会在代码块处截断正文）。
           $body = (Get-Content $notes -Encoding utf8 | Select-Object -Skip 1) + $md5Comment
