@@ -74,7 +74,7 @@ public static class Program
             Console.WriteLine("  ReplayTool <dump.wav> <模板目录> <边界在dump内秒数> [内核偏移秒=-5.1] [搜索半窗秒=12]");
             Console.WriteLine("  ReplayTool fitter <样本序列文件> [死区秒=0.3]   # 离线验证偏移估计算法（每行：yyyy-MM-dd HH:mm:ss,所需偏移秒）");
             Console.WriteLine("  ReplayTool notify-test                        # 断言「人工审核提醒」的开关与阈值判定");
-            Console.WriteLine("  ReplayTool sample-manage-test                 # 断言样本管理（人工作废标记）的数据层行为");
+            Console.WriteLine("  ReplayTool sample-manage-test                 # 断言样本管理（人工作废标记 + 「当时偏移」列口径）的数据层行为");
             Console.WriteLine("  ReplayTool dumps-clear-test                   # 断言「清除无用录音」只删陈年 wav（近期/断言夹具/非 wav/子目录一律不动）");
             Console.WriteLine("  ReplayTool manual-fit <offset-samples.jsonl> [yyyy-MM-dd]  # 跑一遍手动拟合（当天有效样本 → 偏移）");
             Console.WriteLine("  ReplayTool gate-scan <dump.wav> <边界在dump内秒数>   # 打印闸门候选表（比值/峰值）+ 两种选法对比");
@@ -834,6 +834,9 @@ public static class Program
     /// <item><description>把一条「已写入」的样本人工取消 → 它不再参与，其余不受影响；</description></item>
     /// <item><description>撤销人工结论后回到判据原判；</description></item>
     /// <item><description>旁挂文件不存在 / 含乱行时不影响样本读取。</description></item>
+    /// <item><description>设置页「当时偏移」列取的是记录里的 <c>CurrentSec</c>（那次测量依据的偏移、拟合的输入侧），
+    /// 不是拟合算出来的 <c>RequiredSec</c>——用例里 4 条的 CurrentSec 全相同而 RequiredSec 各不相同，
+    /// 字段一旦用错就会被钉住（v1.1.0 修订）。</description></item>
     /// </list>
     /// 任一条不符即返回非零。
     /// </summary>
@@ -890,6 +893,19 @@ public static class Program
             Check(deadZone1.IsEligible && deadZone1.InDeadZone, "★ ② 死区带内未写入 → 默认参与（本次要求）");
             Check(!rejected1.IsEligible && !rejected1.InDeadZone, "③ 大误差拒写 → 默认不参与");
             Check(!overridden1.IsEligible, "④ 人工标为不参与 → 不参与（人工优先于默认）");
+
+            // ── 样本管理「当时偏移」列的口径（v1.1.0 修订）──
+            // 这一列要显示的是样本记录里那次测量**依据的偏移量**（CurrentSec，拟合的输入侧），
+            // 不是拟合算出来的「所需偏移」（RequiredSec）。上面 4 条的 CurrentSec 都落成 6.50、
+            // RequiredSec 却是 6.90/6.52/1.50/6.51 —— 只要混用就会立刻被这几条钉住。
+            Check(loaded.All(x => Math.Abs(x.CurrentSec - 6.50) < 0.0005),
+                "★ 「当时偏移」列的取值 = 记录里的 CurrentSec（4 条都是 6.500）");
+            Check(loaded.All(x => Math.Abs(x.CurrentSec - x.RequiredSec) > 0.0005),
+                "★ 「当时偏移」与「所需偏移」在这批样本里确实不同（用错字段必被这组数据暴露）");
+            Check(OffsetSampleStore.InputOffsetLabel(applied1) == "+6.500 s",
+                $"★ 列文字格式 = 带符号三位小数 + 空格 s（实际「{OffsetSampleStore.InputOffsetLabel(applied1)}」）");
+            Check(OffsetSampleStore.InputOffsetLabel(loaded.First(x => x.CurrentSec == 6.50 && x.RequiredSec == 1.50)) == "+6.500 s",
+                "★ 大误差拒写那条（所需 1.500 ≠ 当时 6.500）显示的仍是当时偏移");
 
             // 死区阈值真的被使用：把死区调到比差值更小，② 就应变成不参与
             var savedDeadZone = OffsetSampleStore.DeadZoneSeconds;
@@ -1331,7 +1347,8 @@ public static class Program
             var mark = s.IsEligible ? "[参与]" : "[不参与]";
             var origin = OffsetSampleStore.JudgeLabel(s);
             var changed = s.UserValid == OffsetSampleStore.DefaultValid(s) ? "" : "（人工调整）";
-            Console.WriteLine($"  {mark} {s.At:HH:mm:ss.fff}  所需偏移 {s.RequiredSec,9:F4}s  {origin}{changed}");
+            Console.WriteLine($"  {mark} {s.At:HH:mm:ss.fff}  当时偏移 {OffsetSampleStore.InputOffsetLabel(s),9}" +
+                              $"  所需偏移 {s.RequiredSec,9:F4}s  {origin}{changed}");
         }
         Console.WriteLine();
 
@@ -1341,7 +1358,8 @@ public static class Program
         var valid = samples.Where(s => s.IsEligible).ToList();
         foreach (var s in samples.Where(x => !x.IsEligible))
         {
-            Console.WriteLine($"  [提示] 不参与拟合：{s.At:HH:mm:ss}（{s.RequiredSec:F4}s，判据写入={(s.Applied ? "是" : "否")}）");
+            Console.WriteLine($"  [提示] 不参与拟合：{s.At:HH:mm:ss}（当时偏移 {OffsetSampleStore.InputOffsetLabel(s)}，" +
+                              $"所需偏移 {s.RequiredSec:F4}s，判据写入={(s.Applied ? "是" : "否")}）");
         }
 
         var result = ManualFitService.Analyze(samples);

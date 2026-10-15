@@ -118,7 +118,7 @@ ReplayTool gate-guard <Dumps 目录>                      # 基线静默排除�
 ReplayTool absolute-required-test                       # 未观测到切换时的绝对口径 4 条断言
 ReplayTool estimate-test                                # 写入限幅/步进 + 估计器（离群、重开段、趋势门槛）22 条断言
 ReplayTool manual-fit <offset-samples.jsonl> [日期]     # 跑一遍手动拟合：当天有效样本 → 要写入的偏移
-ReplayTool sample-manage-test                           # 样本管理 / 判据位置 22 条断言
+ReplayTool sample-manage-test                           # 样本管理 / 判据位置 / 当时偏移列 30 条断言
 ReplayTool dumps-clear-test                             # 「清除无用录音」的删除/保留判据 20 条断言（近期 / 断言夹具 / 非 wav / 子目录一律不动）
 ReplayTool notify-test                                  # 人工审核提醒的开关/阈值判定 7 条
 ReplayTool envelope <dump.wav> [步长秒]                 # 逐格最大 dBFS 包络（核对起响位置与长铃段）
@@ -133,3 +133,7 @@ ReplayTool envelope <dump.wav> [步长秒]                 # 逐格最大 dBFS �
 - `fitter` 子命令用于**离线验证偏移估计算法**：样本序列文件每行 `yyyy-MM-dd HH:mm:ss,所需偏移秒`，
   工具会逐步喂给生产类 `DriftFitter` 并打印每一步的估计值与是否写入，
   可在不接触运行中的 ClassIsland 的前提下对比不同估计策略的稳定性。
+- `manual-fit` 逐条打印样本时给**两列**（v1.1.0 修订）：`当时偏移` = 该次测量依据的偏移（`CurrentSec`，与设置页
+  「样本管理」那一列同口径，共用 `OffsetSampleStore.InputOffsetLabel`），`所需偏移` = 这条样本算出的
+  让误差归零所需绝对偏移（`RequiredSec`，也就是喂给估计器的值、参与拟合断言的那个量）。
+  写断言时别把两者对调：落在「有效样本取值范围」里的必须是 `RequiredSec`。

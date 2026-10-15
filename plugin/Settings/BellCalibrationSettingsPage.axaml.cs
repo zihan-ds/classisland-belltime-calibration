@@ -53,7 +53,9 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             TimeText = sample.At.ToString("HH:mm:ss.fff");
             Kind = string.IsNullOrEmpty(sample.Kind) ? "-" : sample.Kind;
             Boundary = string.IsNullOrEmpty(sample.BoundaryDisplay) ? "-" : sample.BoundaryDisplay;
-            RequiredText = $"{sample.RequiredSec:+0.000;-0.000;0.000} s";
+            // 「当时偏移」列 = 样本记录里那次测量所依据的偏移量（拟合的输入侧），
+            // 不是「所需偏移」（拟合算出来的那个数）——两者口径见 OffsetSampleStore.InputOffsetLabel
+            InputOffsetText = OffsetSampleStore.InputOffsetLabel(sample);
             AppliedText = sample.Applied ? "是" : "否";
             // 让「为什么默认勾 / 不勾」一眼可见（v1.0.5：改用判据落盘的真实原因，
             // 旧数据没有 Reason 字段时才退回几何代理，标签会注明「原因未记」）
@@ -67,7 +69,12 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
         public string Boundary { get; }
 
-        public string RequiredText { get; }
+        /// <summary>
+        /// 这次测量**当时生效的偏移值**（秒）。界面「当时偏移」列显示的就是它 ——
+        /// 使用者手填进设置的那个量，也是判据做死区/限幅比较的基准。
+        /// 注意它不是拟合算出来的「所需偏移」（那个值只出现在拟合结果与日志里）。
+        /// </summary>
+        public string InputOffsetText { get; }
 
         public string AppliedText { get; }
 

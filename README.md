@@ -273,7 +273,7 @@ dotnet build plugin/tools/ReplayTool/ReplayTool.csproj -c Release
 | 单次写入上限 | 3 秒 | 一次要改的偏移超过此值时**只写 ±此值**（分步逼近，`reason=stepped`）；同时决定是否弹人工复核提醒。改完即生效 |
 | 人工审核提醒 | 开 | 关掉后「分步写入」与「双窗口冲突不写」都仍然照旧发生，只是都不再弹提醒（只记日志） |
 | 布防提前秒数 / 铃响搜索半窗 | 15 / 12 秒 | v1.1.0 起两者都是**下限**：实际 `clamp(max(配置值, \|当前偏移\|+10s), 配置值, 60s)` 与 `max(配置值, \|当前偏移\|+8s)` —— 偏移超过 20 s 时铃才落得进窗口/搜索区间 |
-| 样本管理（设置页卡片） | — | 逐条复核当天样本是否有效；作废的样本不再参与手动拟合（不影响自动应用链路）；「判据位置」列显示**当时真实的原因**（v1.0.5 起，v1.1.0 增 `outlier`/`stepped`），旁证与离群样本默认不勾 |
+| 样本管理（设置页卡片） | — | 逐条复核当天样本是否有效；作废的样本不再参与手动拟合（不影响自动应用链路）；「判据位置」列显示**当时真实的原因**（v1.0.5 起，v1.1.0 增 `outlier`/`stepped`），旁证与离群样本默认不勾；「当时偏移」列显示该次测量当时生效的偏移值（= 记录里的 `CurrentSec`，拟合的**输入侧**），不是这条样本算出来的「所需偏移」（`RequiredSec`）——同一段窗口里没写偏移的几条会显示同一个值，属正常 |
 | 起响沿闸门参数 | 内建常量 | `OnsetGate.GateSeconds=8.0`（2026-10-12 由 2.0 加宽：半窗必须宽于插件的偏移误差，否则真铃落在窗外、只能抓到房间噪声）、`RatioMin=4.0`、`DominanceDb=6.0`（支配门：一侧强出 >6 dB 就用那一侧的坐标，v1.0.5 补对称）、`AgreeSeconds=1.0`（双窗口一致性容差）、`SameStrengthDb=2.0`（两窗口峰值差 ≤2 dB 判为同一段长铃的先后两击；差距落在 2~6 dB 中间带才判冲突，v1.0.5）、`LoudPeakDb=−20`、`MinRiseDb=6.0`（「高声压起响」或条件，v1.0.5）、`SegmentLookbackSeconds=8.0`、`SegmentDropDb=12.0`、`SegmentHoldSeconds=1.2`（长铃起点回溯，v1.0.5）、`AttackWindowSeconds=0.05`（起声归位：回溯后的坐标再走到真的进声那一刻，v1.0.5）、`AbsoluteMinRms≈−50 dBFS` |
 
 日志：
@@ -295,7 +295,7 @@ dotnet build plugin/tools/ReplayTool/ReplayTool.csproj -c Release
 |---|---|
 | `Ts` | 样本时刻（本地墙钟，取铃响起响点） |
 | `RequiredSec` | 本次测得的「让误差归零所需绝对偏移」（秒）；口径恒为**标称边界 − 铃响起响** —— 旁证样本同样如此（旁证样本早先误用内核切换位置当锚，会恒少一个当时的 `CurrentSec`，已修） |
-| `CurrentSec` | 测量时的当前偏移（秒）——`RequiredSec` 与它的差就是本次实际改动量 |
+| `CurrentSec` | 测量时的当前偏移（秒）——`RequiredSec` 与它的差就是本次实际改动量。设置页样本管理的「当时偏移」列显示的就是它（v1.1.0 修订：此前那一列显示的是 `RequiredSec`，与列名「所需偏移」同义、却不是测量所依据的偏移） |
 | `Kind` / `B` | 边界类型（上课/下课）与课表显示时刻 |
 | `Applied` | 本次是否真的写入了偏移（带内不写、离群拒写时为 `false`；分步写入时仍为 `true`——那一步真的写进去了） |
 | `Reason` | 判据给出这个结论的**真实原因**（v1.0.5 起）：`applied` 写入过 / `dead-zone` 预测落在死区带内 / `stepped` 分步写入（v1.1.0，本次只走了 ±上限那一步）/ `outlier` 离群拒写（v1.1.0，与稳健拟合差 >2 s）/ `large-error` 旧版的大误差拒写 / `side-schedule` 仅课表窗口命中（旁证）/ `side-conflict` 双窗口冲突（旁证）。旧样本无此字段，按几何关系反推 |
@@ -334,7 +334,7 @@ ReplayTool envelope <dump.wav> [步长秒]              # 整段 RMS 包络（�
 # 离线断言（全部通过才返回 0）
 ReplayTool gate-reconcile-test <Dumps 目录>          # 双窗口复核 12 条真实窗口 + 6 条合成分支断言（4 个杂音窗口必须判冲突）
 ReplayTool absolute-required-test                    # 退化口径换算 4 条（残差 + 当前偏移 = 绝对所需偏移）
-ReplayTool sample-manage-test                        # 样本管理数据层 22 条（含人工标记与乱行容错）
+ReplayTool sample-manage-test                        # 样本管理数据层 30 条（含人工标记、乱行容错、当时偏移列口径）
 ReplayTool notify-test                               # 人工审核提醒的开关/阈值判定 7 条
 ReplayTool gate-guard <Dumps 目录>                   # 全量 dump：没有任何命中依赖「除以数字静默」的比值
 ReplayTool estimate-test                             # v1.1.0 估计器 12 条：离群只标记不清空、连续两条一致才重开、步进限幅与死区
