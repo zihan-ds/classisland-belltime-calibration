@@ -289,7 +289,15 @@ public static class OffsetSampleStore
     /// </summary>
     /// <param name="today">用于筛选日期（本地）。</param>
     /// <param name="note">说明（中文，供日志）。</param>
-    public static List<OffsetSample> LoadToday(DateTime today, out string note)
+    /// <summary>读取指定日期当天的样本（设置页「样本管理」用）。</summary>
+    public static List<OffsetSample> LoadToday(DateTime today, out string note) => LoadSince(today.Date, out note);
+
+    /// <summary>
+    /// 读取 <paramref name="sinceLocal"/> 之后的样本（按时间升序）。
+    /// 用于**跨天恢复**拟合序列：只恢复当天会让每天第一个窗口把「样本 1」当成中位数
+    /// （10-15 的 08:10 就是这样把一条脏测量 −6.456s 直接写进偏移的）。
+    /// </summary>
+    public static List<OffsetSample> LoadSince(DateTime sinceLocal, out string note)
     {
         var result = new List<OffsetSample>();
         var path = _path;
@@ -318,7 +326,7 @@ public static class OffsetSampleStore
                     continue;
                 }
 
-                if (at.Value.Date != today.Date)
+                if (at.Value < sinceLocal)
                 {
                     skippedOtherDays++;
                     continue;
@@ -359,12 +367,12 @@ public static class OffsetSampleStore
             var deadZoneOnes = result.Count(x => x.InDeadZone);
             var rejected = result.Count(x => !x.Applied && !x.InDeadZone && !x.IsSideEvidence);
             var sideOnes = result.Count(x => x.IsSideEvidence);
-            note = $"载入当天样本 {result.Count} 个（参与手动拟合 {eligible} 个" +
+            note = $"载入样本 {result.Count} 个（参与手动拟合 {eligible} 个" +
                    $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 个默认参与" : "")}" +
                    $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 个默认不参与" : "")}" +
                    $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 个默认不参与（可手动勾上）" : "")}" +
                    $"{(userOverridden > 0 ? $"，人工调整过 {userOverridden} 个" : "")}；" +
-                   $"跳过其它日期 {skippedOtherDays} 个{(unparsed > 0 ? $"，无法解析 {unparsed} 行" : "")}）";
+                   $"跳过更早 {skippedOtherDays} 个{(unparsed > 0 ? $"，无法解析 {unparsed} 行" : "")}）";
             return result;
         }
         catch (Exception ex)

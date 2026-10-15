@@ -928,6 +928,21 @@ public static class Program
             var afterGarbage = OffsetSampleStore.LoadToday(now, out var note2);
             Check(afterGarbage.Count == 4, $"旁挂文件含乱行时样本仍可读（{afterGarbage.Count} 条）：{note2}");
             Check(afterGarbage.Count(x => x.IsEligible) == 2, "乱行不影响参与拟合的判定");
+
+            // ── 跨天恢复（v1.1.0）：布防时按时间窗恢复样本，而不是只看当天 ──
+            // 起因：10-15 的 08:10 窗口是当天第一条样本（−6.456s 脏值），序列为空 → 它自己成了中位数，
+            // 被当成预测值步进写入（偏移 1.438 → −1.562）。带上前一晚的样本，这种脏值立刻能判成离群。
+            var clock = DateTime.Today.AddHours(9);
+            var yesterdayEvening = clock.Date.AddDays(-1).AddHours(22);
+            OffsetSampleStore.Append(yesterdayEvening, 1.40, 1.44, "下课", yesterdayEvening.ToString("HH:mm:ss.fff"), true);
+
+            var todayOnly = OffsetSampleStore.LoadToday(clock, out _);
+            Check(todayOnly.All(x => x.At.Date == clock.Date), "LoadToday 仍然只给当天样本");
+            var last12h = OffsetSampleStore.LoadSince(clock.AddHours(-12), out _);
+            Check(last12h.Any(x => x.At == yesterdayEvening), "★ 12h 窗口把前一晚的样本也恢复进来（早晨第一个窗口不再是孤证）");
+            Check(last12h.Count == todayOnly.Count + 1, $"12h 窗口 = 当天 {todayOnly.Count} 条 + 前一晚 1 条（实际 {last12h.Count}）");
+            var last1h = OffsetSampleStore.LoadSince(clock.AddHours(-1), out _);
+            Check(!last1h.Any(x => x.At == yesterdayEvening), "窗口收窄到 1h 后前一晚样本不再进入");
         }
         catch (Exception ex)
         {

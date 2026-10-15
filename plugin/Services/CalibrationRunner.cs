@@ -117,13 +117,20 @@ public class CalibrationRunner : IDisposable
     }
 
     /// <summary>
-    /// 首次布防时把**当天**已落盘的偏移样本恢复进拟合器（v1.0.1）。
-    /// 目的：进程重启不再清空当天的样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
+    /// 首次布防时把**最近 <see cref="SeedLookbackHours"/> 小时**已落盘的偏移样本恢复进拟合器
+    /// （v1.0.1 起只恢复当天，v1.1.0 起改为按时间窗恢复）。
+    /// 目的：进程重启不再清空样本序列 —— 否则重启后的前几个边界会退回「单次测量直接写入」，
     /// 期间偏移会有 1~2 次无谓的小跳（2026-09-15 10:05 重启实测即如此）。
-    /// 只恢复当天：跨天的基准可能已被人为校准改变，混入会污染中位数。
+    ///
+    /// 跨天为什么要带上前一晚：10-15 的 08:10 窗口给出了当天第一条样本 −6.456s（脏值），
+    /// 而当时序列为空 → 它自己成了「中位数」，直接被当成预测值**步进写入**（偏移 1.438 → −1.562）。
+    /// 只恢复当天，等于每天早上第一个窗口都没有任何旁证；窗口从 0 点往前拉 12 h 就能拿到前一晚的
+    /// 若干条样本（10-15 起手会有 10-14 晚间的 4 条），脏值立刻变成可判定的离群。
+    /// 跨天污染由三道机制兜住：中位数只用最近 6 h 窗口、离群拒写 ±<see cref="DriftFitter.OutlierRejectSeconds"/>s、
+    /// 跳变检测（人工改过偏移后由 <see cref="ReloadTodaySamples"/> 按同一时间窗重装）。
     /// 失败只记日志，不影响校准主链路。
     ///
-    /// v1.0.4：恢复的是**当天全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
+    /// v1.0.4：恢复的是**窗口内全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
     /// 由中位数与跳变检测兜住单点脏值；手动拟合另有一套更严格的「只取有效样本」口径，见
     /// <see cref="ManualFitService"/>（两处口径不同是刻意的：手动拟合没有中位数的样本量优势）。
     /// </summary>
@@ -135,21 +142,22 @@ public class CalibrationRunner : IDisposable
 
         try
         {
-            var today = OffsetSampleStore.LoadToday(DateTime.Now, out _);
-            if (today.Count == 0)
+            var since = DateTime.Now.AddHours(-SeedLookbackHours);
+            var recent = OffsetSampleStore.LoadSince(since, out _);
+            if (recent.Count == 0)
             {
-                Logger.InfoIfChanged("samples", "[校时] 样本 当天 0 条");
+                Logger.InfoIfChanged("samples", $"[校时] 样本 近{SeedLookbackHours:F0}h 0 条");
                 return;
             }
 
             // v1.0.5：旁证样本（只课表命中 / 双窗口冲突）**不进运行时估计器** —— 它们不是「开关窗口」
-            // 的测量，而运行时口径是「当天全部样本 + 中位数」，会把它当成一次普通测量照单全收。
+            // 的测量，而运行时口径是「窗口内全部样本 + 中位数」，会把它当成一次普通测量照单全收。
             // 手动拟合另有一套「只取勾选样本」的口径（见 ManualFitService），两处刻意不同。
-            var seedable = today.Where(s => !s.IsSideEvidence).ToList();
+            var seedable = recent.Where(s => !s.IsSideEvidence).ToList();
             var seeded = _fitter.Seed(seedable.Select(s => (s.At, s.RequiredSec)));
             // v1.0.4：一行短摘要 + 内容未变不重复打（同一份摘要原先每窗口都写一遍，130+ 字）。
             Logger.InfoIfChanged("samples",
-                $"[校时] 样本 {OffsetSampleStore.Summarize(today)} 导入{seeded}｜中位{_fitter.MedianSeconds:F3}s({_fitter.SampleCount})");
+                $"[校时] 样本 {OffsetSampleStore.Summarize(recent)} 导入{seeded}｜中位{_fitter.MedianSeconds:F3}s({_fitter.SampleCount})");
         }
         catch (Exception ex)
         {
@@ -688,6 +696,13 @@ public class CalibrationRunner : IDisposable
     public const double DefaultLargeErrorLimitSeconds = 3.0;
 
     /// <summary>
+    /// 布防时回溯恢复样本的时间窗（小时）。见 <see cref="RestoreTodaySamplesOnce"/>：
+    /// 12 h 覆盖「前一晚 → 第二天早上第一节课」（10-15 起手日的最早窗口 07:07，前一晚最后一条 22:29 → 8.6 h），
+    /// 又不至于把隔夜前的旧基准拉进来。
+    /// </summary>
+    public const double SeedLookbackHours = 12.0;
+
+    /// <summary>
     /// 应用管线（捕获完成的后台线程，每个窗口最多执行一次；v0.4.0 起仅内核通道）：
     /// v0.6.1 口径 = 以**实测误差** e = t_ring（铃响墙钟）− t_switch（宿主真正切换的墙钟）为判据，
     /// 二者同为墙钟，任何未知的偏移来源（内核额外偏移/手工调整/时钟偏差）都自动抵消；
@@ -797,18 +812,11 @@ public class CalibrationRunner : IDisposable
                 $" 差{diff.TotalSeconds:+0.000;-0.000;0.000} 样本{_fitter.SampleCount}/离散{_fitter.MaxDeviationSeconds:F3}" +
                 $" → {(shouldApply ? "写入" : "带内不写")}");
 
-            if (!shouldApply)
-            {
-                rec.Gate = "skipped";
-                rec.GateNote = $"{_policy.LastNote}；样本 {_fitter.SampleCount} 个";
-                // 这次是**干净测量**，只是预测值与当时偏移的差落在死区内（"已经够准所以不写"）
-                sampleReason = SampleReason.DeadZone;
-                return;
-            }
-
             // 离群复核（v1.1.0）：**测量本身**与本批稳健拟合差得太远 → 拒写。
             // 拦截点在拟合器里（见 DriftFitter.LastSampleWasOutlier），与「大误差」的区别是判据：
             // 那个比「目标 − 当前偏移」（改动量），这个比「本次测量 − 稳健拟合」（可信度）。
+            // 必须排在死区之前：脏值（10-15 的 09:40 +5.924、11:40 +7.334）与当时的预测值之差也可能落在死区内，
+            // 若先判死区，样本管理界面就会把它显示成「死区带内（未写）」并默认勾选参与拟合 —— 看起来是干净测量。
             if (_fitter.LastSampleWasOutlier)
             {
                 rec.Gate = "skipped";
@@ -817,6 +825,15 @@ public class CalibrationRunner : IDisposable
                 Logger.Warn(
                     $"[校时] 离群拒写：本次测得所需偏移 {required.TotalSeconds:F3}s 与稳健拟合 {_fitter.MedianSeconds:F3}s " +
                     $"相差超过 ±{DriftFitter.OutlierRejectSeconds:F1}s，判为脏值 → 本次不写偏移。{_fitter.LastNote}");
+                return;
+            }
+
+            if (!shouldApply)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = $"{_policy.LastNote}；样本 {_fitter.SampleCount} 个";
+                // 这次是**干净测量**（已过离群复核），只是预测值与当时偏移的差落在死区内（"已经够准所以不写"）
+                sampleReason = SampleReason.DeadZone;
                 return;
             }
 
