@@ -1,0 +1,69 @@
+name: Release
+
+# 分支构建：main 上改动 plugin/** 时只验证「能不能打包」，不发 Release。
+# Tag 构建：tag 严格为 a.b.c.d（ClassIsland 插件市场的要求）时构建并发布 Release，
+#           Release 正文里会带上打包目标自动生成的 CLASSISLAND_PKG_MD5 注释（市场索引需要）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/**'
+      - '.github/workflows/release.yml'
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cipx:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: 构建并一键打包 .cipx
+        run: dotnet build plugin/BellTimeCalibration.csproj -c Release -p:CreateCipx=true
+
+      - name: 校验打包产物
+        shell: pwsh
+        run: |
+          $cipx = 'plugin/cipx/BellTimeCalibration.cipx'
+          if (-not (Test-Path $cipx)) { throw "未生成 $cipx" }
+          Get-ChildItem plugin/cipx | Select-Object Name, Length | Format-Table -AutoSize
+          $md5 = (Get-FileHash $cipx -Algorithm MD5).Hash
+          if (-not (Select-String -Path plugin/cipx/checksums.md -SimpleMatch $md5 -Quiet)) {
+            throw "checksums.md 中找不到 cipx 的 MD5（$md5）"
+          }
+          "cipx MD5 = $md5"
+
+      - name: 分支构建仅上传产物供人工检查
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BellTimeCalibration-cipx
+          path: plugin/cipx/BellTimeCalibration.cipx
+
+      - name: 发布 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          # Release 正文 = 本版本的更新说明（去掉文件自身的 H1 标题，标题已是 Release 的 v$tag）；
+          # 末尾必须保留 CLASSISLAND_PKG_MD5 注释，插件市场索引依赖它。
+          $md5Comment = (Get-Content plugin/cipx/checksums.md -Raw).Trim()
+          # 说明文件按「三段版本号」命名（如 1.0.4），tag 是四段（1.0.4.0），故两者都要试。
+          $notes = @("更新说明-v$tag.md") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $notes) { $notes = "更新说明-v$($tag -replace '\.0$').md" }
+          if (-not (Test-Path $notes)) { throw "找不到 $tag 对应的更新说明文件（已试 更新说明-v$tag.md 与 $notes），Release 正文无法生成" }
+          # 该文件里另有 3 行以 '# ' 开头的内容位于 bash 代码块内，
+          # 所以只能丢掉第 1 行，不能用 /^# / 起头过滤（会在代码块处截断正文）。
+          $body = (Get-Content $notes -Encoding utf8 | Select-Object -Skip 1) + $md5Comment
+          Set-Content -Path release-body.md -Value $body -Encoding utf8NoBOM
+          gh release create $tag plugin/cipx/BellTimeCalibration.cipx --title "v$tag" --notes-file release-body.md
