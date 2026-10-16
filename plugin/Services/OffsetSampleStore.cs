@@ -102,6 +102,16 @@ public readonly record struct OffsetSample(
     /// 判断可信就勾上，它会像普通样本一样参与手动拟合。
     /// </summary>
     public bool IsSideEvidence => Reason is SampleReason.SideSchedule or SampleReason.SideConflict;
+
+    /// <summary>
+    /// 判据已判为**脏值、拒写**的样本（v1.1.0.0 增补）：离群（<see cref="SampleReason.Outlier"/>）与
+    /// 旧版的「大误差拒写」（<see cref="SampleReason.LargeError"/>）。
+    ///
+    /// 与 <see cref="IsSideEvidence"/> 的区别：旁证是「判据没拿到开关窗口的测量」，这类是「拿到了，但测量本身不可信」。
+    /// 两类都**不该回到运行时估计器**，但判据不同，界面上也要分开显示（<c>拒写（旧数据，原因未记）</c> 属于第三类：
+    /// 连原因都没记的旧行，无法判定，照旧当普通测量处理）。
+    /// </summary>
+    public bool IsRejected => Reason is SampleReason.Outlier or SampleReason.LargeError;
 }
 
 /// <summary>
@@ -157,6 +167,19 @@ public static class OffsetSampleStore
                (side > 0 ? $"｜旁证 {side}" : "") +
                (overridden > 0 ? $"｜人工 {overridden}" : "") + "）";
     }
+
+    /// <summary>
+    /// 该样本是否可以喂给**运行时估计器**（v1.0.5 起排除旁证；v1.1.0.0 起一并排除判据已判脏值拒写的样本）。
+    ///
+    /// 起因（2026-10-16 实机）：首窗恢复把前一晚两条 `outlier`（−6.395 / −6.427）当成普通测量喂了进去，
+    /// 恢复中位数被拖到 −3.359 s（只留干净样本是 −0.11 s）—— 判据白天已经明确拒写的脏值，
+    /// 隔夜又从恢复窗口流了回来。旁证当初就是因为同一个理由被排除的，这次把「已拒写」补齐。
+    ///
+    /// 不影响手动拟合：那边用 <see cref="DefaultValid"/> 与人工勾选（<see cref="OffsetSample.IsEligible"/>）判定，
+    /// 使用者判断某条拒写样本可信时仍可勾上让它参与。
+    /// </summary>
+    public static bool IsSeedableForRuntime(OffsetSample sample) =>
+        !sample.IsSideEvidence && !sample.IsRejected;
 
     /// <summary>
     /// 判据给出的默认勾选状态（界面默认值，也是「人工是否改过」的比较基准）。

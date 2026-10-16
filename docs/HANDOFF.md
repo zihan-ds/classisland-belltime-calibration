@@ -106,7 +106,7 @@
 | `OnsetGate.DominanceDb` / `SameStrengthDb` | 6.0 / 2.0 | 双窗口复核：一侧强出 >6 dB 用那一侧；差距落在 2~6 dB 判冲突 |
 | `CalibrationScheduler.CaptureMarginSeconds` | 10.0 | `CurrentLead()` 里给偏移留的余量 |
 | `CalibrationScheduler.MaxLeadSeconds` | 60.0 | 提前量上限 |
-| `CalibrationRunner.SeedLookbackHours` | 12.0 | 首次布防时恢复**最近 12 小时**的样本（v1.1.0 修，见 8.3） |
+| `CalibrationRunner.SeedLookbackHours` | 12.0 | 首次布防时恢复**最近 12 小时**的样本（v1.1.0 修，见 8.3）；**进食口径** = `OffsetSampleStore.IsSeedableForRuntime`：旁证与已拒写（`outlier` / `large-error`）一律不进估计器（v1.1.0.0 收严，见 8.5） |
 | `DriftFitter.OutlierRejectSeconds` | 2.0 | 与稳健拟合差超过它即判离群（不入列、不清空） |
 | `DriftFitter.SegmentRestartAgreements` / `SegmentRestartAgreementSeconds` | 2 / 1.0 | 连续两条彼此一致（≤1 s）才认定基准真跳变、重开样本段 |
 | `DriftFitter.TrendMinSamples` / `TrendMinSpanHours` / `TrendMaxResidualSeconds` / `MaxExtrapolationHours` / `MaxSlopeSecondsPerHour` | 6 / 4 / 0.6 / 24 / 2.0 | 趋势外推的三项门槛 + 外推上限 + 斜率钳制 |
@@ -238,7 +238,7 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 & $tool estimate-test       # 步进写入的方向/边界/限幅、离群不入列也不清空样本段、连续两条一致才重开段、趋势门槛
 & $tool absolute-required-test   # 4 条退化口径
 & $tool notify-test         # 7 条提醒判定
-& $tool sample-manage-test  # 22+4 条样本管理（含 v1.1.0 新增的跨天恢复 4 条）
+& $tool sample-manage-test  # 37 条样本管理（含跨天恢复、当时偏移列口径、已拒写样本不得回灌估计器）
 & $tool dumps-clear-test    # 20 条「清除无用录音」删除/保留判据
 & $tool gate-reconcile-test # 1 条真实窗口 + 6 条合成分支 + 11 条夹具已丢失（打印「跳过」，只有真回归才失败）
 & $tool gate-guard          # 全量 dump：没有任何命中依赖「除以数字静默」的比值
@@ -268,7 +268,7 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 | `estimate-test` | 步进方向/边界/限幅、离群挂起、连续两条一致才重开段、趋势门槛 |
 | `absolute-required-test` | 4 条退化口径 |
 | `notify-test` | 7 条提醒判定 + 无冷却 + 2 条冲突提醒 |
-| `sample-manage-test` | 22 条 + v1.1.0 新增 4 条跨天恢复 |
+| `sample-manage-test` | 37 条：默认勾选/人工覆盖/乱行容错 + 跨天恢复 4 条 + 当时偏移列 4 条 + 进食口径 6 条 |
 | `dumps-clear-test` | 20 条删除/保留判据 |
 | `gate-reconcile-test` | 1 真实 + 6 合成；11 条夹具录音已丢失 → 打印「跳过」 |
 | `gate-guard` | 81 个 dump：命中 72、**0 个依赖数字静默**、命中最大比值 979.0× |
@@ -318,10 +318,28 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 `判据位置=写入过`。另外 11:39 那条显示「死区带内（未写）」是 **12:31 部署前的旧版残留**（那版死区判定排在
 离群判定之前），文件里就是 `dead-zone`，不会被新版本重算。
 
-### 8.5 未验证 / 待观察 ⚠️
+### 8.5 2026-10-16：恢复序列的进食口径收严（判据已拒写的样本不得回灌）✅
 
-- **跨天闭环**：v1.1.0 的 `outlier` / `stepped` 标签、`样本 近12h N 条` 恢复行、模板锚定在真实边界上的表现，都还没经过一个**自然窗口**的验证（部署时刻为 10-15 12:31，之后的下一个边界窗口才算）。
-- **模板未命中的窗口要不要加更硬的门**（例如「模板未命中就完全不写入」）：代价是可用窗口从约 3/4 降到约 1/3、收敛变慢——**等用户拍板，未擅自加**。
+**实测**：10-16 07:07 重启，08:09 首窗恢复走了 12 h 窗口（20:09~08:09），捞到 4 条 ——
+`20:10 −6.395 outlier`、`21:29 +0.098 dead-zone`、`21:40 −6.427 outlier`、`22:30 −0.323 applied`，
+日志 `样本 当天 4（参与 2｜死区 1｜拒写 2） 导入4｜中位-3.359s(4)`。两条**判据白天已明确拒写**的离群值
+（`Reason=outlier`）被当成普通测量喂回估计器，恢复中位数被拖到 **−3.359 s**（只留干净样本应为 **−0.112 s**），
+首窗因此多走了一小步（−0.322 → −1.414）；偏移本身没错，但「恢复」的意义被削弱。
+根因：`RestoreTodaySamplesOnce` 的 `seedable` 只排了旁证样本（`!IsSideEvidence`）。
+
+**修正**：进食口径收敛到一处 —— 新增 `OffsetSample.IsRejected`（`outlier` / 旧版 `large-error`）与
+`OffsetSampleStore.IsSeedableForRuntime(sample)`（`!IsSideEvidence && !IsRejected`），
+`RestoreTodaySamplesOnce` 改为 `recent.Where(OffsetSampleStore.IsSeedableForRuntime)`。
+旧数据（`Reason=Unknown`，原因未记）无法判定，**仍按普通测量处理**；`dead-zone` / `applied` / `stepped` 照常进食。
+手动拟合不受影响（那边是「勾选即参与」口径，人工把拒写样本拉回来仍有效）。
+离线断言 `sample-manage-test` 新增 6 条钉住：拒写样本不被摄取、旁证与之分开标记、干净测量与旧数据仍可摄取、
+以及「同一批样本排除拒写后中位数由 −3.359 → −0.112」的数值复核。
+
+### 8.6 未验证 / 待观察 ⚠️
+
+- **恢复窗口是否会漏掉前一晚**：窗口是「首个布防时刻往前 12 h」的滑动窗口，首窗越晚起点越晚（10-16 首窗 08:09 → 起点 20:09，昨晚最后一条 22:30 仍在窗内；若首窗推到 08:10 之后，更早的样本就会被丢）。10-16 尚未触发，**等用户决定是否放宽到 14~16 h 或改锚点**。
+- **下课铃偏离标称边界 ±5~6 s**（10-15 20:10/21:40、10-16 09:39 +4.441、10-16 10:50 −6.182，均被离群门拦下）：是铃声本身如此还是判据挑错，需要实听核对；确认后决定「勾选参与拟合」还是「填进忽略的边界时刻」。
+- **跨天闭环**：`outlier` / `stepped` 标签与模板锚定已在 10-16 上午的自然窗口上验证通过（5 条干净样本、中位 −1.360、离散 0.296 s）；**模板未命中的窗口要不要加更硬的门**（例如「模板未命中就完全不写入」）仍未拍板——代价是可用窗口从约 3/4 降到约 1/3、收敛变慢。
 - 运行中的内核二进制仍是 9/7 由工作区源码构建的版本（比原版多一个**未被使用**的可写属性）；插件与该差异无关。
 
 ---

@@ -182,7 +182,7 @@ plugin/                       插件源码（.NET 8）
 │  ├─ RingDetector.cs         突发起响点检测
 │  ├─ TemplateMatcher.cs      模板匹配（粗定位→精定位→音色→攻击沿）；v1.1.0 起每窗先跑、命中即当锚点
 │  ├─ DriftFitter.cs          偏移估计器：6h 稳健中位数 + 趋势外推；离群 >2 s 只标记不收列、不清空样本段（v1.1.0）
-│  ├─ OffsetSampleStore.cs    偏移样本按天落盘（重启按最近 12h 窗口恢复序列，供离线分析；v1.0.5 起记「判据位置」与旁证样本）
+│  ├─ OffsetSampleStore.cs    偏移样本按天落盘（重启按最近 12h 窗口恢复序列，排除旁证与已拒写样本；v1.0.5 起记「判据位置」，v1.1.0.0 起有 IsSeedableForRuntime）
 │  ├─ BellReviewDecision.cs   单次写入限幅/分步判据 + 提醒开关判定（纯函数，可离线断言）
 │  ├─ BellReviewNotifier.cs   复核提醒：文案 + 交给宿主提醒通道派发
 │  ├─ ManualFitService.cs     手动拟合：当天有效样本 → 所需偏移（设置页按钮背后的纯逻辑）
@@ -306,7 +306,11 @@ dotnet build plugin/tools/ReplayTool/ReplayTool.csproj -c Release
    避免进程重启后前几个边界退回「单次测量直接写入」。用时间窗而不是「当天」，是为了让每天早上第一个窗口
    也有前一晚的样本做旁证 —— 10-15 的 08:10 就吃过亏：当天首条样本是脏值（−6.456 s），序列里再没有别的样本，
    它自己成了中位数被直接写了进去（日志 `样本1/离散0.000`）。
-   日志会写明 `偏移样本恢复：载入样本 N 个（参与…；跳过更早 M 个）`。
+   日志会写明 `样本 当天 N（参与…） 导入M｜中位…s(K)`。
+   **谁会被捞回来**（v1.1.0.0 收严，口径见 `OffsetSampleStore.IsSeedableForRuntime`）：判据采信过的测量（写入过 / 死区带内 / 步进）
+   照常；**旁证样本**与**判据已判脏值拒写的样本**（`outlier` / 旧版 `large-error`）**不喂给运行时估计器** ——
+   2026-10-16 首窗实测：前一晚两条 `outlier`（−6.395 / −6.427）原会被当成普通测量恢复回来，把恢复中位数从 −0.11 s 拖到 −3.359 s。
+   旧数据（无 `Reason` 字段、原因未记）无法判定，仍按普通测量处理。人工在样本管理里勾上的拒写样本仍可参与**手动拟合**（两处口径刻意不同）。
 2. **离线分析**：可直接画偏移随时间的变化（`Ts` vs `RequiredSec`），
    或用 `ReplayTool fitter <样本序列文件>` 离线复算不同估计策略的稳定性。
 3. **旁证样本不进估计器**（v1.0.5）：`Reason` 为 `side-schedule` / `side-conflict` 的样本**不参与**
@@ -334,7 +338,7 @@ ReplayTool envelope <dump.wav> [步长秒]              # 整段 RMS 包络（�
 # 离线断言（全部通过才返回 0）
 ReplayTool gate-reconcile-test <Dumps 目录>          # 双窗口复核 12 条真实窗口 + 6 条合成分支断言（4 个杂音窗口必须判冲突）
 ReplayTool absolute-required-test                    # 退化口径换算 4 条（残差 + 当前偏移 = 绝对所需偏移）
-ReplayTool sample-manage-test                        # 样本管理数据层 30 条（含人工标记、乱行容错、当时偏移列口径）
+ReplayTool sample-manage-test                        # 样本管理数据层 37 条（含人工标记、乱行容错、当时偏移列口径、已拒写样本不得回灌估计器）
 ReplayTool notify-test                               # 人工审核提醒的开关/阈值判定 7 条
 ReplayTool gate-guard <Dumps 目录>                   # 全量 dump：没有任何命中依赖「除以数字静默」的比值
 ReplayTool estimate-test                             # v1.1.0 估计器 12 条：离群只标记不清空、连续两条一致才重开、步进限幅与死区

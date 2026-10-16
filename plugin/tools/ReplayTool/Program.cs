@@ -959,6 +959,46 @@ public static class Program
             Check(last12h.Count == todayOnly.Count + 1, $"12h 窗口 = 当天 {todayOnly.Count} 条 + 前一晚 1 条（实际 {last12h.Count}）");
             var last1h = OffsetSampleStore.LoadSince(clock.AddHours(-1), out _);
             Check(!last1h.Any(x => x.At == yesterdayEvening), "窗口收窄到 1h 后前一晚样本不再进入");
+
+            // ── 恢复序列的摄取口径（v1.1.0.0）：判据已判脏值拒写的样本不得回灌估计器 ──
+            // 起因（2026-10-16 实机）：首窗恢复把前一晚两条 outlier（−6.395 / −6.427）当普通测量喂进去，
+            // 恢复中位数被拖到 −3.359s（只留干净样本应为 −0.11s）—— 判据白天明确拒写的脏值，
+            // 隔夜又从恢复窗口流了回来（原先只排了旁证样本）。
+            OffsetSampleStore.Append(clock.AddHours(-3), -6.395, -1.414, "上课",
+                clock.AddHours(-3).ToString("HH:mm:ss.fff"), false, SampleReason.Outlier);
+            OffsetSampleStore.Append(clock.AddHours(-2), -6.427, -1.414, "上课",
+                clock.AddHours(-2).ToString("HH:mm:ss.fff"), false, SampleReason.LargeError);
+            OffsetSampleStore.Append(clock.AddHours(-4), 0.150, 0.254, "下课",
+                clock.AddHours(-4).ToString("HH:mm:ss.fff"), false, SampleReason.SideSchedule);
+            var beforeIngest = OffsetSampleStore.LoadToday(clock, out _);
+            var reject = beforeIngest.First(x => x.Reason == SampleReason.Outlier);
+            var legacyReject = beforeIngest.First(x => x.Reason == SampleReason.LargeError);
+            var side = beforeIngest.First(x => x.Reason == SampleReason.SideSchedule);
+            Check(reject.IsRejected && legacyReject.IsRejected, "★ 已拒写样本（outlier / large-error）标记为「不该回灌估计器」");
+            Check(!side.IsRejected && side.IsSideEvidence, "旁证样本与之分开标记（不混为一类）");
+            Check(!OffsetSampleStore.IsSeedableForRuntime(reject)
+                  && !OffsetSampleStore.IsSeedableForRuntime(legacyReject)
+                  && !OffsetSampleStore.IsSeedableForRuntime(side),
+                "★ IsSeedableForRuntime：已拒写与旁证都不进运行时估计器");
+            Check(OffsetSampleStore.IsSeedableForRuntime(beforeIngest.First(x => x.Applied)),
+                "★ 判据写入过的干净测量照常回灌");
+            Check(beforeIngest.Any(x => x.Reason == SampleReason.Unknown)
+                  && OffsetSampleStore.IsSeedableForRuntime(beforeIngest.First(x => x.Reason == SampleReason.Unknown)),
+                "旧数据（无 Reason 字段、原因未记）仍按普通测量处理，不被新规则误伤");
+
+            // 数值验证：同一批样本，排除已拒写后的中位数必须明显回正（10-16 实机那组数）
+            var withRejects = new[] { -6.395, -6.427, 0.098, -0.323 };
+            var cleanOnly = new[] { 0.098, -0.323 };
+            static double Median(double[] v)
+            {
+                var s = v.OrderBy(x => x).ToArray();
+                var m = s.Length / 2;
+                return s.Length % 2 == 1 ? s[m] : (s[m - 1] + s[m]) / 2.0;
+            }
+            Check(Math.Abs(Median(withRejects) + 3.359) < 0.01,
+                $"回灌脏值会把中位数拖到 {Median(withRejects):F3}s（实机日志正是 -3.359s）");
+            Check(Math.Abs(Median(cleanOnly) + 0.112) < 0.01,
+                $"★ 排除已拒写后中位数为 {Median(cleanOnly):F3}s（首窗本可一条到位）");
         }
         catch (Exception ex)
         {

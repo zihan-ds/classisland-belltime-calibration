@@ -130,9 +130,11 @@ public class CalibrationRunner : IDisposable
     /// 跳变检测（人工改过偏移后由 <see cref="ReloadTodaySamples"/> 按同一时间窗重装）。
     /// 失败只记日志，不影响校准主链路。
     ///
-    /// v1.0.4：恢复的是**窗口内全部**样本（含 <c>Applied = false</c> 的）—— 这是运行时既有口径，
+    /// v1.0.4：恢复的是**窗口内判据采信过的**样本（含 <c>Applied = false</c> 的死区测量）——
     /// 由中位数与跳变检测兜住单点脏值；手动拟合另有一套更严格的「只取有效样本」口径，见
     /// <see cref="ManualFitService"/>（两处口径不同是刻意的：手动拟合没有中位数的样本量优势）。
+    /// v1.1.0.0：旁证样本与**判据已判脏值拒写的样本**（<c>outlier</c> / 旧版 <c>large-error</c>）都不喂给运行时估计器，
+    /// 口径收敛到 <see cref="OffsetSampleStore.IsSeedableForRuntime"/> 一处。
     /// </summary>
     private void RestoreTodaySamplesOnce()
     {
@@ -150,10 +152,14 @@ public class CalibrationRunner : IDisposable
                 return;
             }
 
-            // v1.0.5：旁证样本（只课表命中 / 双窗口冲突）**不进运行时估计器** —— 它们不是「开关窗口」
-            // 的测量，而运行时口径是「窗口内全部样本 + 中位数」，会把它当成一次普通测量照单全收。
-            // 手动拟合另有一套「只取勾选样本」的口径（见 ManualFitService），两处刻意不同。
-            var seedable = recent.Where(s => !s.IsSideEvidence).ToList();
+            // 只有「判据采信过、且测量本身没被判脏」的样本才进运行时估计器（口径见 IsSeedableForRuntime）：
+            // · v1.0.5 起排除旁证样本 —— 旁证不是「开关窗口」的测量，运行时口径是「窗口内全部样本 + 中位数」，
+            //   照单全收会把一次判据自己都没采信的测量当成普通测量；
+            // · v1.1.0.0 起一并排除判据已判脏值拒写的样本（outlier / 旧版 large-error）——
+            //   2026-10-16 首窗实测：前一晚两条 outlier（−6.395 / −6.427）被恢复回来，
+            //   把恢复中位数从 −0.11 s 拖到 −3.359 s（只留干净样本才是正确的 −0.11 s）。
+            // 手动拟合另有一套「勾选即参与」的口径（含人工把拒写样本拉回来），两处刻意不同。
+            var seedable = recent.Where(OffsetSampleStore.IsSeedableForRuntime).ToList();
             var seeded = _fitter.Seed(seedable.Select(s => (s.At, s.RequiredSec)));
             // v1.0.4：一行短摘要 + 内容未变不重复打（同一份摘要原先每窗口都写一遍，130+ 字）。
             Logger.InfoIfChanged("samples",

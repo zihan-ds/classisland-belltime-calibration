@@ -118,7 +118,7 @@ ReplayTool gate-guard <Dumps 目录>                      # 基线静默排除�
 ReplayTool absolute-required-test                       # 未观测到切换时的绝对口径 4 条断言
 ReplayTool estimate-test                                # 写入限幅/步进 + 估计器（离群、重开段、趋势门槛）22 条断言
 ReplayTool manual-fit <offset-samples.jsonl> [日期]     # 跑一遍手动拟合：当天有效样本 → 要写入的偏移
-ReplayTool sample-manage-test                           # 样本管理 / 判据位置 / 当时偏移列 30 条断言
+ReplayTool sample-manage-test                           # 样本管理 / 判据位置 / 当时偏移列 / 进食口径 37 条断言
 ReplayTool dumps-clear-test                             # 「清除无用录音」的删除/保留判据 20 条断言（近期 / 断言夹具 / 非 wav / 子目录一律不动）
 ReplayTool notify-test                                  # 人工审核提醒的开关/阈值判定 7 条
 ReplayTool envelope <dump.wav> [步长秒]                 # 逐格最大 dBFS 包络（核对起响位置与长铃段）
