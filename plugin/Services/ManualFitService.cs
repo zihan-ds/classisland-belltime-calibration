@@ -39,7 +39,7 @@ public sealed record ManualFitResult(
 /// 不使用任何启发式阈值（MAD/残差之类），只用这一个显式标记。
 ///
 /// 为什么用 <see cref="DriftFitter.Seed"/> 而不是逐条 <see cref="DriftFitter.Add"/>：
-/// Add 带 2.5 s 跳变检测，序列里只要夹进一条脏样本就会清空整段重开，
+/// Add 带 2.0 s 跳变检测，序列里只要夹进一条脏样本就会清空整段重开，
 /// 会让「一次手动拟合」变成「只用最后一条样本」。
 /// </summary>
 public static class ManualFitService
@@ -82,8 +82,9 @@ public static class ManualFitService
     /// 越界返回 null。
     ///
     /// 为什么不直接取该行的 <see cref="OffsetSample.RequiredSec"/>：列的口径是「勾上本行后
-    /// 手动拟合会写入什么」，必须包含 <see cref="DriftFitter"/> 的离群挂起与趋势逻辑；
-    /// 当前已有 ≥3 条参与样本时，本行可能仍被拟合器判为离群而完全不改变写入值——这就是真实行为。
+    /// 手动拟合会写入什么」，必须包含 <see cref="DriftFitter"/> 的 6h 窗口与趋势逻辑。
+    /// 手动拟合走 <see cref="DriftFitter.Seed"/>，不会对勾选样本再做 Add 的跳变/离群拒写；
+    /// 强制行一定进入样本序列，窗口外的行通常不改变中位数，窗口内则按中位数变化。
     /// </summary>
     /// <param name="samples">当前样本列表（按界面行的顺序）。</param>
     /// <param name="index">要强制纳入的行号。</param>

@@ -18,9 +18,9 @@
 
 | 项 | 状态 |
 |---|---|
-| 实机版本 | **v1.1.1.0**（2026-10-19 21:46 部署），已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（21:47:02 启动横幅已确认 `v1.1.1.0 就绪`；插件目录已含 `README.md`） |
+| 实机版本 | **v1.1.1.0**（2026-10-19 21:46 首次部署，21:59 二次部署修正说明），已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（21:47:02 与 21:59:31 启动横幅均确认 `v1.1.1.0 就绪`；插件目录已含 `README.md`；备份 `.bak-v1.1.0.0-preAdoptColumn` / `.bak-v1.1.1.0-preHintFix`） |
 | 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `2.851 s` |
-| 仓库 HEAD | `1bb0edb`（v1.1.0.0 恢复序列修复）；本次 v1.1.1.0 改动见本地提交（`git log -1`） |
+| 仓库 HEAD | `b80bd65`（v1.1.1.0 采用偏移/两位小数/README）；随后一个本地提交修正采用偏移的 6h 窗口说明（`git log -2`） |
 | 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；v1.1.1.0 仅本地提交，**未推送、未打 tag**。推送记录见 `.github/workflows/release.yml` 与 git log。 |
 | 最近一次实机发现 | 2026-10-15 上午两处判据缺陷（见第 8.3 节）：① 当天第一条样本自己当基准被单样本直写；② 真正被拟合器判离群的测量被标成「死区带内」并默认勾选。**两处都已修并部署**，两棵树的源码与实机 DLL 一致 |
 | 立刻要做的三件事 | ① 下一个自然边界窗口的日志里：脏值应落 `outlier`、大差值应落 `stepped`；② 设置页样本管理应显示「当时偏移」列（表头与同一窗口同值的现象见 8.4 节）；③ 判断 20:10 / 21:40 那两窗「真铃晚 6.4 s」是否为真实基准偏移 |
@@ -346,12 +346,13 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 ### 8.7 2026-10-19：v1.1.1.0「采用偏移」列 + 两位小数 + README 打包修复 ✅
 
 - 样本管理新增第 4 列「采用偏移」：当前勾选集合 + 本行强制纳入后的手动拟合写入值（B 口径），勾选变化实时重算；已勾选行显示当前拟合结果，未勾选行显示勾上后的结果。
-- 预览复用 `ManualFitService.AnalyzeWithForcedSample` → `Analyze`，包含 `DriftFitter` 的离群/趋势逻辑；已有 ≥3 条参与样本时，本行仍可能被判离群挂起，预览值可能不变（这是真实写入行为）。
+- 预览复用 `ManualFitService.AnalyzeWithForcedSample` → `Analyze`，包含 `DriftFitter` 的 6h 窗口/趋势逻辑；手动拟合走 `Seed`，不做 `Add` 的跳变/离群拒写；窗口外的行通常不改变预览，窗口内按中位数变化，只有中位数恰好不变时才不变。
 - 所有实际写入统一经 `CorrectionPolicy.RoundOffsetSeconds`（两位、AwayFromZero）：`SettingsOffsetApplier.Apply` 与 `ManualFitService.Analyze` 两处调用；「当时偏移」「采用偏移」两列也显示两位小数，诊断值仍保留三位。
 - 插件页概览找不到 `README.md`：`.cipx` 由 SDK `CreateCipx` 打包整个 `$(OutputPath)`，`plugin/README.md` 通过 csproj `CopyToOutputDirectory=Always` 进入输出/包；部署时同时拷 `README.md` 到插件目录，重启后概览可加载。
 - 清理过时的分发指引文档与引用（README / HANDOFF / 更新说明-v1.1.0），只清当前树，不改写 git 历史、不强推。
 - `sample-manage-test` 37 → 43 条（采用偏移预览、两位小数）；三个项目 Release 构建 0 warning / 0 error。
 - 部署：2026-10-19 21:46 覆盖 `BellTimeCalibration.dll` / `deps.json` / `manifest.yml` / `README.md`（备份 `.bak-v1.1.0.0-preAdoptColumn`），21:47:02 启动横幅 `v1.1.1.0 就绪`；`.cipx` 已含 README.md。
+- 2026-10-19 复验（当天 19 条样本、8 条勾选）：勾选行及窗口外行预览 `2.77`；强制 16:20/16:30/20:10 三条窗口内离群行为 `2.52`（6h 窗口中位数变化），均与生产 `AnalyzeWithForcedSample` 一致；据此把「离群挂起」说明改为 6h 窗口/中位数，21:59 二次部署（备份 `.bak-v1.1.1.0-preHintFix`），启动横幅确认。
 
 ---
 
