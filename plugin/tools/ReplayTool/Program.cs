@@ -74,7 +74,7 @@ public static class Program
             Console.WriteLine("  ReplayTool <dump.wav> <模板目录> <边界在dump内秒数> [内核偏移秒=-5.1] [搜索半窗秒=12]");
             Console.WriteLine("  ReplayTool fitter <样本序列文件> [死区秒=0.3]   # 离线验证偏移估计算法（每行：yyyy-MM-dd HH:mm:ss,所需偏移秒）");
             Console.WriteLine("  ReplayTool notify-test                        # 断言「人工审核提醒」的开关与阈值判定");
-            Console.WriteLine("  ReplayTool sample-manage-test                 # 断言样本管理（人工作废标记 + 「当时偏移」列口径）的数据层行为");
+            Console.WriteLine("  ReplayTool sample-manage-test                 # 断言样本管理（人工标记 + 当时偏移列 + 采用偏移预览/两位小数）的数据层行为");
             Console.WriteLine("  ReplayTool dumps-clear-test                   # 断言「清除无用录音」只删陈年 wav（近期/断言夹具/非 wav/子目录一律不动）");
             Console.WriteLine("  ReplayTool manual-fit <offset-samples.jsonl> [yyyy-MM-dd]  # 跑一遍手动拟合（当天有效样本 → 偏移）");
             Console.WriteLine("  ReplayTool gate-scan <dump.wav> <边界在dump内秒数>   # 打印闸门候选表（比值/峰值）+ 两种选法对比");
@@ -902,10 +902,38 @@ public static class Program
                 "★ 「当时偏移」列的取值 = 记录里的 CurrentSec（4 条都是 6.500）");
             Check(loaded.All(x => Math.Abs(x.CurrentSec - x.RequiredSec) > 0.0005),
                 "★ 「当时偏移」与「所需偏移」在这批样本里确实不同（用错字段必被这组数据暴露）");
-            Check(OffsetSampleStore.InputOffsetLabel(applied1) == "+6.500 s",
-                $"★ 列文字格式 = 带符号三位小数 + 空格 s（实际「{OffsetSampleStore.InputOffsetLabel(applied1)}」）");
-            Check(OffsetSampleStore.InputOffsetLabel(loaded.First(x => x.CurrentSec == 6.50 && x.RequiredSec == 1.50)) == "+6.500 s",
+            Check(OffsetSampleStore.InputOffsetLabel(applied1) == "+6.50 s",
+                $"★ 列文字格式 = 带符号两位小数 + 空格 s（实际「{OffsetSampleStore.InputOffsetLabel(applied1)}」）");
+            Check(OffsetSampleStore.InputOffsetLabel(loaded.First(x => x.CurrentSec == 6.50 && x.RequiredSec == 1.50)) == "+6.50 s",
                 "★ 大误差拒写那条（所需 1.500 ≠ 当时 6.500）显示的仍是当时偏移");
+
+            // ── 「采用偏移」列与两位小数写入（v1.1.1.0）──
+            // 预览必须复用 Analyze：当前参与 ①6.90 + ②6.52 → 6.71；强制纳入 ③1.50 后
+            // 三条中位数 6.52。只取单行 RequiredSec 或手写中位数都会被这组数钉住。
+            var previewApplied = ManualFitService.AnalyzeWithForcedSample(loaded, 0);
+            Check(previewApplied != null && Math.Abs(previewApplied.OffsetSeconds - 6.71) < 0.0005,
+                $"★ 已勾选行的采用偏移 = 当前拟合结果 6.71（实际 {previewApplied?.OffsetSeconds:F2}）");
+            var previewRejected = ManualFitService.AnalyzeWithForcedSample(loaded, 2);
+            Check(previewRejected != null && previewRejected.ValidCount == 3
+                  && Math.Abs(previewRejected.OffsetSeconds - 6.52) < 0.0005,
+                $"★ 未勾选行强制纳入：参与 3 条、拟合 6.52（实际 {previewRejected?.ValidCount}/{previewRejected?.OffsetSeconds:F2}）");
+            Check(ManualFitService.AnalyzeWithForcedSample(loaded, -1) == null
+                  && ManualFitService.AnalyzeWithForcedSample(loaded, loaded.Count) == null,
+                "采用偏移预览：越界索引返回 null");
+
+            var roundingFit = ManualFitService.Analyze(new[]
+            {
+                new OffsetSample(now.AddMinutes(-10), 6.901, false),
+                new OffsetSample(now, 6.526, false),
+            });
+            Check(roundingFit != null && Math.Abs(roundingFit.OffsetSeconds - 6.71) < 0.0005,
+                $"★ 手动拟合写入值取两位小数（6.901/6.526 → 6.71，实际 {roundingFit?.OffsetSeconds:F4}）");
+            Check(Math.Abs(CorrectionPolicy.RoundOffsetSeconds(4.17585) - 4.18) < 1e-9
+                  && Math.Abs(CorrectionPolicy.RoundOffsetSeconds(-3.2294) + 3.23) < 1e-9,
+                "写入舍入：4.17585 → 4.18，-3.2294 → -3.23");
+            Check(OffsetSampleStore.OffsetLabel(4.17585) == "+4.18 s"
+                  && OffsetSampleStore.OffsetLabel(-3.2294) == "-3.23 s",
+                $"★ 采用偏移列文字：两位小数、带符号（实际「{OffsetSampleStore.OffsetLabel(4.17585)}」「{OffsetSampleStore.OffsetLabel(-3.2294)}」）");
 
             // 死区阈值真的被使用：把死区调到比差值更小，② 就应变成不参与
             var savedDeadZone = OffsetSampleStore.DeadZoneSeconds;
@@ -1409,7 +1437,7 @@ public static class Program
             return 0;
         }
 
-        Console.WriteLine($"拟合结果：写入 {result.OffsetSeconds:F3}s");
+        Console.WriteLine($"拟合结果：写入 {result.OffsetSeconds:F2}s");
         Console.WriteLine($"  参与拟合样本 {result.ValidCount}/{result.TotalCount}；中位数 {result.MedianSeconds:F3}s；" +
                           $"最大偏差 {result.MaxDeviationSeconds:F3}s；趋势启用={result.TrendEnabled}");
         Console.WriteLine($"  {result.Note}");

@@ -51,6 +51,11 @@
     <None Include="icon.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <!-- 插件页「概览」从插件目录读 README.md（缺文件会报 Could not find file ...）。
+         SDK 的 CreateCipx 打包整个 $(OutputPath)，所以复制到输出即会进入 .cipx。 -->
+    <None Update="README.md">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

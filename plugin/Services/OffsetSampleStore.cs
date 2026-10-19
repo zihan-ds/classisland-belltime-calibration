@@ -207,7 +207,13 @@ public static class OffsetSampleStore
     };
 
     /// <summary>
-    /// 设置页样本管理「当时偏移」列与离线工具共用的文字（v1.1.0 修订）。
+    /// 偏移值 → 界面文字（v1.1.1.0：两位小数）。写入粒度也是两位小数，
+    /// 所以「当时偏移」「采用偏移」两列与离线工具统一用这个格式。
+    /// </summary>
+    public static string OffsetLabel(double seconds) => $"{seconds:+0.00;-0.00;0.00} s";
+
+    /// <summary>
+    /// 设置页样本管理「当时偏移」列与离线工具共用的文字（v1.1.0 修订，v1.1.1 改两位小数）。
     ///
     /// 这一列显示的是**测量那一刻生效的偏移值**（<see cref="OffsetSample.CurrentSec"/>）：
     /// 使用者能看到的偏移就是这个量 —— 他手填进「应用设置 → 时钟 → 时间偏移」的是它，
@@ -216,8 +222,7 @@ public static class OffsetSampleStore
     /// 也就是喂给估计器的那个测量值）不是一个量；两者之差才是本次的实际改动量。
     /// 界面与离线工具共用本方法，保证两处口径与格式一致。
     /// </summary>
-    public static string InputOffsetLabel(OffsetSample sample) =>
-        $"{sample.CurrentSec:+0.000;-0.000;0.000} s";
+    public static string InputOffsetLabel(OffsetSample sample) => OffsetLabel(sample.CurrentSec);
 
     /// <summary>判据位置 → 落盘代码（英文短语，稳定可读，写在 JSON 行的 <c>Reason</c> 字段）。</summary>
     private static string ReasonCode(SampleReason reason) => reason switch

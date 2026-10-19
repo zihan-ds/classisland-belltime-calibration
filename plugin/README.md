@@ -7,7 +7,7 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.1.0.0**（四段，与发布 tag `1.1.0.0` 一致） |
+| 版本 | **1.1.1.0**（四段，与发布 tag `1.1.1.0` 一致） |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 状态 | 学习模式默认开启；建议先用学习模式观察数日再启用自动应用 |
 
@@ -19,7 +19,7 @@
 
 | 目录 | 作用 | 该放什么 |
 |---|---|---|
-| `data\Plugins\belltime.calibration\` | **加载路径**（`PluginService.PluginsRootPath` = 应用根目录下的 `Plugins\`），ClassIsland 只从这里加载 | `BellTimeCalibration.dll`、`BellTimeCalibration.deps.json`、`manifest.yml`、`icon.png`、`miniaudio.dll`、`SoundFlow.dll` |
+| `data\Plugins\belltime.calibration\` | **加载路径**（`PluginService.PluginsRootPath` = 应用根目录下的 `Plugins\`），ClassIsland 只从这里加载 | `BellTimeCalibration.dll`、`BellTimeCalibration.deps.json`、`manifest.yml`、`icon.png`、`README.md`（插件页概览读取）、`miniaudio.dll`、`SoundFlow.dll` |
 | `data\Config\Plugins\belltime.calibration\` | **插件配置目录**（`PluginConfigFolder`），只放插件自己写的东西 | `BellCalibrationSettings.json`、`Logs\`、`Dumps\`、`Templates\`、`上课铃样本.wav` / `下课铃样本.wav` |
 
 - **升级 = 复制**：把新的 `BellTimeCalibration.dll`（连同 `deps.json`）**复制**到 `data\Plugins\belltime.calibration\` 覆盖旧的，
@@ -146,11 +146,14 @@
 
 ## 样本管理（人工复核）
 
-设置页「样本管理」卡片列出**当天**每条样本（铃响时刻 / 类型 / 课表边界 / 当时偏移 / 判据写入 / 判据位置 / 参与拟合），
+设置页「样本管理」卡片列出**当天**每条样本（铃响时刻 / 类型 / 课表边界 / 当时偏移 / 采用偏移 / 判据写入 / 判据位置 / 参与拟合），
 勾选框可逐条改。**勾选 = 参与手动拟合，取消勾选 = 不参与；人工设为有效的一律参与，无论当初是否被写入过。**
-「当时偏移」列（v1.1.0 修订）显示该次测量**依据的偏移量**——也就是这条样本行里的 `CurrentSec`、使用者手填进
+「当时偏移」列（v1.1.0 修订，v1.1.1 起两位小数）显示该次测量**依据的偏移量**——也就是这条样本行里的 `CurrentSec`、使用者手填进
 「时间偏移」的那个数；它不是这条样本算出来的「所需偏移」（`RequiredSec` = 标称边界 − 铃响起响，那个值只出现在
 拟合结果与日志里）。两者之差才是本次的实际改动量，所以同一段窗口里没写偏移的几条样本会显示同一个「当时偏移」。
+「采用偏移」列（v1.1.1）显示在当前勾选基础上把本行也纳入拟合后，手动拟合并应用会写入的值（两位小数）：
+已勾选行显示当前拟合结果，未勾选行显示勾上后的结果，勾选变化立即重算。当前已有 ≥3 条参与样本时，
+拟合器仍可能把本行判为离群挂起，预览值可能不变——这是真实写入行为。手动拟合与自动应用的所有实际写入也统一取两位小数。
 默认勾选：判据写入过的勾选，**落在死区带内没写的、以及分步写入（`stepped`）的也勾选**（同样是干净测量），
 离群（`outlier`）默认不勾选；人工结论优先。
 「判据位置」一列直接标出每条属于哪一类，默认勾不勾一眼可见：**写入过** / **死区带内（未写）** / **步进写入** /
@@ -300,7 +303,7 @@ BellTimeCalibration/
 │  ├─ CalibrationRunner.cs        # 窗口编排：闸门/模板/双窗口复核 → 拟合 → 门控 → 落样本/写入
 │  ├─ OffsetSampleStore.cs        # 样本落盘与恢复 + 判据位置 Reason + 人工参与标记（旁挂 JSONL）
 │  ├─ CalibrationHistory.cs       # 结构化校准历史 JSONL（协议 v1，供离线调参）
-│  ├─ ManualFitService.cs         # 手动拟合：当天有效样本 → 所需偏移（设置页按钮背后的纯逻辑）
+│  ├─ ManualFitService.cs         # 手动拟合：当天有效样本 → 所需偏移（含「采用偏移」预览、两位小数写入）
 │  ├─ ClockDiagnostic.cs          # 内核时钟自检（DebugClockDiagnostic）
 │  ├─ BellReviewDecision.cs       # 大误差复核提醒的阈值/开关判定（纯函数，可离线断言）
 │  ├─ BellReviewNotifier.cs       # 复核提醒：文案 + 宿主提醒通道（HostNotificationSender）

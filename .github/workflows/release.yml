@@ -58,7 +58,7 @@ jobs:
           # Release 正文 = 本版本的更新说明（去掉文件自身的 H1 标题，标题已是 Release 的 v$tag）；
           # 末尾必须保留 CLASSISLAND_PKG_MD5 注释，插件市场索引依赖它。
           $md5Comment = (Get-Content plugin/cipx/checksums.md -Raw).Trim()
-          # 版本号一律四段：tag 是 1.1.0.0；说明文件按既有惯例用三段名（更新说明-v1.1.0.md，
+          # 版本号一律四段：tag 是 1.1.1.0；说明文件按既有惯例用三段名（更新说明-v1.1.1.md，
           # 与历史 更新说明-v1.0.4.md / v1.0.5.md 同一格式）。先按四段名找，再退到三段名。
           $candidates = @("更新说明-v$tag.md", "更新说明-v$($tag -replace '\.0$').md")
           $notes = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1

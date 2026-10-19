@@ -26,6 +26,12 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
     /// <summary>上次点「清除无用录音」的时刻：两击确认用（第二次点击须在 10 秒内）。</summary>
     private DateTime _clearDumpsArmedUtc = DateTime.MinValue;
 
+    /// <summary>当前样本行（与界面顺序一致；勾选变化时用于重算「采用偏移」预览）。</summary>
+    private System.Collections.Generic.List<DaySampleRow> _sampleRows = new();
+
+    /// <summary>最近一次载入样本的说明（摘要文字用）。</summary>
+    private string _sampleLoadNote = "";
+
     public BellCalibrationSettingsPage()
     {
         InitializeComponent();
@@ -44,9 +50,11 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
     {
         private readonly string _ts;
         private bool _valid;
+        private string _adoptOffsetText = "-";
 
         public DaySampleRow(OffsetSample sample)
         {
+            Sample = sample;
             _ts = string.IsNullOrEmpty(sample.Ts)
                 ? sample.At.ToString("yyyy-MM-dd HH:mm:ss.fff")
                 : sample.Ts;
@@ -62,6 +70,9 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             OriginText = OffsetSampleStore.JudgeLabel(sample);
             _valid = sample.UserValid;
         }
+
+        /// <summary>本行原始样本（「采用偏移」预览与摘要重算用）。</summary>
+        public OffsetSample Sample { get; }
 
         public string TimeText { get; }
 
@@ -80,6 +91,22 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
         /// <summary>判据当时把这条样本归到哪一类（写入过 / 死区带内未写 / 大误差拒写）。</summary>
         public string OriginText { get; }
+
+        /// <summary>
+        /// 在当前勾选基础上把本行也纳入拟合后，手动拟合并应用会写入的偏移（两位小数）。
+        /// 预览值与按钮共用 <see cref="ManualFitService.Analyze"/>，不是本行原始的 RequiredSec。
+        /// </summary>
+        public string AdoptOffsetText
+        {
+            get => _adoptOffsetText;
+            set
+            {
+                if (_adoptOffsetText == value)
+                    return;
+                _adoptOffsetText = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(AdoptOffsetText)));
+            }
+        }
 
         /// <summary>本行样本是否可用于拟合（人工可改）。改动立即写盘。</summary>
         public bool Valid
@@ -114,9 +141,16 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         try
         {
             var today = OffsetSampleStore.LoadToday(DateTime.Now, out var note);
+            _sampleLoadNote = note;
+
             var rows = new System.Collections.Generic.List<DaySampleRow>(today.Count);
             foreach (var s in today)
-                rows.Add(new DaySampleRow(s));
+            {
+                var row = new DaySampleRow(s);
+                row.PropertyChanged += OnSampleRowPropertyChanged;
+                rows.Add(row);
+            }
+            _sampleRows = rows;
 
             var list = this.FindControl<ItemsControl>("SampleList");
             if (list != null)
@@ -126,20 +160,8 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             if (empty != null)
                 empty.IsVisible = rows.Count == 0;
 
-            var summary = this.FindControl<TextBlock>("SampleSummaryText");
-            var eligible = today.Count(s => s.IsEligible);
-            var overridden = today.Count(s => s.UserValid != OffsetSampleStore.DefaultValid(s));
-            var deadZoneOnes = today.Count(s => s.InDeadZone);
-            var sideOnes = today.Count(s => s.IsSideEvidence);
-            var rejected = today.Count(s => !s.Applied && !s.InDeadZone && !s.IsSideEvidence);
-            if (summary != null)
-            {
-                summary.Text = $"当天 {today.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
-                               $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
-                               $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 条默认不参与（可手动勾上）" : "")}" +
-                               $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条默认不参与（判据没拿到开关窗口测量，只留课表窗口坐标/冲突记录，确认可信再勾）" : "")}" +
-                               $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{note}";
-            }
+            UpdateSampleSummary();
+            RefreshAdoptOffsets();
 
             // v1.0.4 日志瘦身：原先每次打开/重新载入设置页都写一行 130+ 字的说明（一天 30+ 行）；
             // 现在写短摘要，且内容未变就不重复写（界面上的详细说明不受影响）。
@@ -152,6 +174,68 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             var summary = this.FindControl<TextBlock>("SampleSummaryText");
             if (summary != null)
                 summary.Text = $"载入失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>按当前勾选重算摘要（勾选变化后摘要也要跟着变，不能停留在载入时的快照）。</summary>
+    private void UpdateSampleSummary()
+    {
+        var summary = this.FindControl<TextBlock>("SampleSummaryText");
+        if (summary == null)
+            return;
+
+        var rows = _sampleRows;
+        var eligible = rows.Count(r => r.Valid);
+        var overridden = rows.Count(r => r.Valid != OffsetSampleStore.DefaultValid(r.Sample));
+        var deadZoneOnes = rows.Count(r => r.Sample.InDeadZone);
+        var sideOnes = rows.Count(r => r.Sample.IsSideEvidence);
+        var rejected = rows.Count(r => !r.Sample.Applied && !r.Sample.InDeadZone && !r.Sample.IsSideEvidence);
+
+        summary.Text = $"当天 {rows.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
+                       $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
+                       $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 条默认不参与（可手动勾上）" : "")}" +
+                       $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条默认不参与（判据没拿到开关窗口测量，只留课表窗口坐标/冲突记录，确认可信再勾）" : "")}" +
+                       $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{_sampleLoadNote}";
+    }
+
+    /// <summary>勾选变化：摘要与「采用偏移」预览都按新的勾选集合重算。</summary>
+    private void OnSampleRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(DaySampleRow.Valid))
+            return;
+
+        UpdateSampleSummary();
+        RefreshAdoptOffsets();
+    }
+
+    /// <summary>
+    /// 重算「采用偏移」列：在当前勾选集合上逐行强制纳入本行，跑与手动拟合按钮相同的 Analyze。
+    /// 行数最多 40，逐行重算成本可忽略；全部异常只影响预览文字，不影响样本列表。
+    /// </summary>
+    private void RefreshAdoptOffsets()
+    {
+        if (_sampleRows.Count == 0)
+            return;
+
+        try
+        {
+            var samples = new System.Collections.Generic.List<OffsetSample>(_sampleRows.Count);
+            foreach (var row in _sampleRows)
+                samples.Add(row.Sample with { UserValid = row.Valid });
+
+            for (var i = 0; i < _sampleRows.Count; i++)
+            {
+                var preview = ManualFitService.AnalyzeWithForcedSample(samples, i);
+                _sampleRows[i].AdoptOffsetText = preview == null
+                    ? "-"
+                    : OffsetSampleStore.OffsetLabel(preview.OffsetSeconds);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[校时] 样本管理：采用偏移预览计算失败：{ex.Message}");
+            foreach (var row in _sampleRows)
+                row.AdoptOffsetText = "-";
         }
     }
 
@@ -230,7 +314,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             if (applier?.IsAvailable != true)
             {
                 SetFitResult("偏移写入通道不可用（未能解析内核 Settings.TimeOffsetSeconds），拟合结果未写入。");
-                Logger.Warn($"[校时] 手动拟合：写入通道不可用，拟合值 {result.OffsetSeconds:F3}s 未写入；{result.Note}");
+                Logger.Warn($"[校时] 手动拟合：写入通道不可用，拟合值 {result.OffsetSeconds:F2}s 未写入；{result.Note}");
                 return;
             }
 
@@ -258,7 +342,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
             var summary = ManualFitService.Describe(result, before);
             SetFitResult(summary);
-            Logger.Info($"[校时] 手动拟合并应用（设置页按钮）：{summary}（无视学习模式与自动应用开关）");
+            Logger.Info($"[校时] 手动拟合并应用（设置页按钮）：{summary}（无视学习模式与自动应用开关；写入两位小数）");
         }
         catch (Exception ex)
         {

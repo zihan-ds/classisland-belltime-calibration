@@ -60,6 +60,14 @@ public class CorrectionPolicy
         return (currentSeconds + Math.Sign(diff) * limitSeconds, true);
     }
 
+    /// <summary>
+    /// 写入「应用设置·时间偏移」时的统一精度（v1.1.1.0）：两位小数，四舍五入（远离零）。
+    /// 手动拟合与自动应用都经过 <see cref="SettingsOffsetApplier.Apply"/>，只在这里定义一次，
+    /// 避免各调用点各写一套舍入后互不一致。
+    /// </summary>
+    public static double RoundOffsetSeconds(double seconds)
+        => Math.Round(seconds, 2, MidpointRounding.AwayFromZero);
+
     private const int HistoryCap = 20;
 
     private readonly List<TimeSpan> _history = new();

@@ -7,7 +7,7 @@ namespace BellTimeCalibration.Services;
 /// <summary>
 /// 一次手动拟合的结果（全部为基元类型，便于离线工具直接打印与断言）。
 /// </summary>
-/// <param name="OffsetSeconds">拟合出的「所需绝对偏移」（秒）——这就是要写入设置项的值。</param>
+/// <param name="OffsetSeconds">拟合出的「所需绝对偏移」（秒）——已按写入精度取两位小数，这就是要写入设置项的值。</param>
 /// <param name="ValidCount">参与拟合的有效样本数（<c>Applied = true</c>）。</param>
 /// <param name="TotalCount">当天样本总数（含被排除的）。</param>
 /// <param name="MedianSeconds">有效样本的中位数（秒）。</param>
@@ -67,13 +67,36 @@ public static class ManualFitService
             return null;
 
         return new ManualFitResult(
-            offset.Value,
+            CorrectionPolicy.RoundOffsetSeconds(offset.Value),
             valid.Count,
             all.Count,
             fitter.MedianSeconds,
             fitter.MaxDeviationSeconds,
             fitter.TrendEnabled,
             fitter.LastNote ?? "");
+    }
+
+    /// <summary>
+    /// 「采用偏移」列的预览（v1.1.1.0）：在当前勾选集合的基础上，强制把第
+    /// <paramref name="index"/> 条样本标为参与，再跑与「手动拟合并应用」完全相同的 <see cref="Analyze"/>。
+    /// 越界返回 null。
+    ///
+    /// 为什么不直接取该行的 <see cref="OffsetSample.RequiredSec"/>：列的口径是「勾上本行后
+    /// 手动拟合会写入什么」，必须包含 <see cref="DriftFitter"/> 的离群挂起与趋势逻辑；
+    /// 当前已有 ≥3 条参与样本时，本行可能仍被拟合器判为离群而完全不改变写入值——这就是真实行为。
+    /// </summary>
+    /// <param name="samples">当前样本列表（按界面行的顺序）。</param>
+    /// <param name="index">要强制纳入的行号。</param>
+    public static ManualFitResult? AnalyzeWithForcedSample(IReadOnlyList<OffsetSample> samples, int index)
+    {
+        if (samples is null || index < 0 || index >= samples.Count)
+            return null;
+
+        var adjusted = new List<OffsetSample>(samples.Count);
+        for (var i = 0; i < samples.Count; i++)
+            adjusted.Add(i == index ? samples[i] with { UserValid = true } : samples[i]);
+
+        return Analyze(adjusted);
     }
 
     /// <summary>
@@ -85,9 +108,9 @@ public static class ManualFitService
     {
         var change = previousOffsetSeconds == null
             ? ""
-            : $"（由 {previousOffsetSeconds.Value:F3} 改为 {result.OffsetSeconds:F3}，" +
+            : $"（由 {previousOffsetSeconds.Value:F3} 改为 {result.OffsetSeconds:F2}，" +
               $"差 {result.OffsetSeconds - previousOffsetSeconds.Value:+0.000;-0.000;0.000}）";
-        return $"已写入 {result.OffsetSeconds:F3} 秒{change}；" +
+        return $"已写入 {result.OffsetSeconds:F2} 秒{change}；" +
                $"参与拟合样本 {result.ValidCount}/{result.TotalCount}（勾选即参与，可在设置页「样本管理」里调整）；" +
                $"{result.Note}";
     }

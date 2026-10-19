@@ -108,9 +108,10 @@ public sealed class SettingsOffsetApplier : IOffsetApplier
         try
         {
             var oldValue = (double)_offsetProperty!.GetValue(_settings)!;
-            var newValue = correction.TotalSeconds;
+            // v1.1.1.0：所有实际写入统一两位小数；旧值保留三位便于看出实际改动。
+            var newValue = CorrectionPolicy.RoundOffsetSeconds(correction.TotalSeconds);
             _offsetProperty.SetValue(_settings, newValue);
-            Logger.Info($"[校时] {Name} 应用时间偏移：{oldValue:F3} 秒 → {newValue:F3} 秒（Settings.TimeOffsetSeconds）。");
+            Logger.Info($"[校时] {Name} 应用时间偏移：{oldValue:F3} 秒 → {newValue:F2} 秒（Settings.TimeOffsetSeconds）。");
             return true;
         }
         catch (Exception ex)

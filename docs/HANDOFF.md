@@ -10,7 +10,7 @@
 
 # 铃声自动校时（BellTimeCalibration）· 会话交接日志
 
-> 插件版本 **1.1.0.0**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
+> 插件版本 **1.1.1.0**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
 
 ---
 
@@ -18,9 +18,10 @@
 
 | 项 | 状态 |
 |---|---|
-| 实机版本 | **v1.1.0.0**（含 2026-10-15 晚的样本管理列修订），已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（21:57 部署，启动横幅已确认 `v1.1.0.0 就绪`） |
-| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `0.254 s` |
-| 仓库 HEAD | `b2b7ce4`（文档）→ `7a443dc`（合并提交）→ `c1954ea`「v1.1.0 修订：样本管理『所需偏移』列改为『当时偏移』」→ `5409c20` → `3b99685`「v1.1.0 修：离群判定提前 + 布防恢复窗口 12h」→ `71b8f16`（v1.1.0 主体，提交信息即完整变更清单）→ `427e9a5` = v1.0.5。**注**：2026-10-15 22:23 做过一次全仓作者改写（占位作者 → `zihan_ds <261094359+zihan-ds@users.noreply.github.com>`），改写前的哈希是 `328282f / ee1974a / 963ed03 / 0f72911`，两者 tree 完全一致 || 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）。详情见根目录《迁移与推送.md》 |
+| 实机版本 | **v1.1.1.0**（2026-10-19 21:46 部署），已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（21:47:02 启动横幅已确认 `v1.1.1.0 就绪`；插件目录已含 `README.md`） |
+| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `2.851 s` |
+| 仓库 HEAD | `1bb0edb`（v1.1.0.0 恢复序列修复）；本次 v1.1.1.0 改动见本地提交（`git log -1`） |
+| 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；v1.1.1.0 仅本地提交，**未推送、未打 tag**。推送记录见 `.github/workflows/release.yml` 与 git log。 |
 | 最近一次实机发现 | 2026-10-15 上午两处判据缺陷（见第 8.3 节）：① 当天第一条样本自己当基准被单样本直写；② 真正被拟合器判离群的测量被标成「死区带内」并默认勾选。**两处都已修并部署**，两棵树的源码与实机 DLL 一致 |
 | 立刻要做的三件事 | ① 下一个自然边界窗口的日志里：脏值应落 `outlier`、大差值应落 `stepped`；② 设置页样本管理应显示「当时偏移」列（表头与同一窗口同值的现象见 8.4 节）；③ 判断 20:10 / 21:40 那两窗「真铃晚 6.4 s」是否为真实基准偏移 |
 ---
@@ -38,7 +39,7 @@
 4. **遇到较大误差时坚决不用脏值**，也不用已被确认不准的办法（启发式选铃因此被删除，见第 5 节）；
 5. **合法修正保持单次 3 s 上限，但所需偏移量可能超过 20 s** → 分几个窗口**分步写入**，而不是整笔拒写；
 6. 校铃误差**呈一定规律变化**；**不存在按上下课分开拟合**——上下课误差规律不应有大差别，若不一致说明拟合有误；
-7. 版本 **v1.1.0.0**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（2026-10-15 22:13 已按指令推 `origin/main`，22:31 打 tag `1.1.0.0`）；
+7. 版本 **v1.1.1.0**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（2026-10-15 已推 `origin/main` 并打 tag `1.1.0.0`；v1.1.1.0 待指令）；
 8. 文档（README、设置页提示、更新说明）必须与实际行为一致；
 9. 音频（铃声样本、`Dumps\`）**不随仓库分发**。
 
@@ -51,7 +52,7 @@
 | `<ClassIsland 便携版根目录>` | 便携版根；本机 `D:\ClassIsland_app_windows_x64_full_folder` |
 | …运行目录 | `<便携版>\app-2.1.0.1-0\ClassIsland.Desktop.exe`（入口是外层的 `ClassIsland.exe`） |
 | …数据目录 | `<便携版>\data\` |
-| 插件程序集目录 | `<便携版>\data\Plugins\belltime.calibration\`（`BellTimeCalibration.dll`、`SoundFlow.dll`、`miniaudio.dll`、`manifest.yml`） |
+| 插件程序集目录 | `<便携版>\data\Plugins\belltime.calibration\`（`BellTimeCalibration.dll`、`SoundFlow.dll`、`miniaudio.dll`、`manifest.yml`、`README.md`） |
 | 插件数据目录 | `<便携版>\data\Config\Plugins\belltime.calibration\`（`BellCalibrationSettings.json`、`Templates\`、`Logs\`、`Dumps\`） |
 | `<工作树>` | **构建 / 跑离线工具 / 放录音**的那棵；本机 `D:\dshwork\classisland auto calibration`（含 `bell-recordings\`、`samples\`、`tools\`、`deploy-snapshot\`） |
 | `<git 树>` | **只放要提交的内容**的那棵；本机 `D:\dshwork\git-classisland auto calibration` |
@@ -157,7 +158,7 @@
 
 ```
 plugin/
-├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，version 1.1.0.0
+├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，version 1.1.1.0
 ├─ Plugin.cs                        入口：日志/配置加载与自动保存、模板加载、设置页注册、AppStarted 自举
 ├─ Models/BellCalibrationSettings.cs 全部设置项 + 忽略列表解析（IsBoundaryIgnored）
 ├─ Services/
@@ -238,7 +239,7 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 & $tool estimate-test       # 步进写入的方向/边界/限幅、离群不入列也不清空样本段、连续两条一致才重开段、趋势门槛
 & $tool absolute-required-test   # 4 条退化口径
 & $tool notify-test         # 7 条提醒判定
-& $tool sample-manage-test  # 37 条样本管理（含跨天恢复、当时偏移列口径、已拒写样本不得回灌估计器）
+& $tool sample-manage-test  # 43 条样本管理（含跨天恢复、当时偏移列口径、采用偏移预览、两位小数、已拒写样本不得回灌估计器）
 & $tool dumps-clear-test    # 20 条「清除无用录音」删除/保留判据
 & $tool gate-reconcile-test # 1 条真实窗口 + 6 条合成分支 + 11 条夹具已丢失（打印「跳过」，只有真回归才失败）
 & $tool gate-guard          # 全量 dump：没有任何命中依赖「除以数字静默」的比值
@@ -268,7 +269,7 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 | `estimate-test` | 步进方向/边界/限幅、离群挂起、连续两条一致才重开段、趋势门槛 |
 | `absolute-required-test` | 4 条退化口径 |
 | `notify-test` | 7 条提醒判定 + 无冷却 + 2 条冲突提醒 |
-| `sample-manage-test` | 37 条：默认勾选/人工覆盖/乱行容错 + 跨天恢复 4 条 + 当时偏移列 4 条 + 进食口径 6 条 |
+| `sample-manage-test` | 43 条：默认勾选/人工覆盖/乱行容错 + 跨天恢复 4 条 + 当时偏移列 4 条 + 采用偏移预览/两位小数 6 条 + 进食口径 6 条 |
 | `dumps-clear-test` | 20 条删除/保留判据 |
 | `gate-reconcile-test` | 1 真实 + 6 合成；11 条夹具录音已丢失 → 打印「跳过」 |
 | `gate-guard` | 81 个 dump：命中 72、**0 个依赖数字静默**、命中最大比值 979.0× |
@@ -342,6 +343,16 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 - **跨天闭环**：`outlier` / `stepped` 标签与模板锚定已在 10-16 上午的自然窗口上验证通过（5 条干净样本、中位 −1.360、离散 0.296 s）；**模板未命中的窗口要不要加更硬的门**（例如「模板未命中就完全不写入」）仍未拍板——代价是可用窗口从约 3/4 降到约 1/3、收敛变慢。
 - 运行中的内核二进制仍是 9/7 由工作区源码构建的版本（比原版多一个**未被使用**的可写属性）；插件与该差异无关。
 
+### 8.7 2026-10-19：v1.1.1.0「采用偏移」列 + 两位小数 + README 打包修复 ✅
+
+- 样本管理新增第 4 列「采用偏移」：当前勾选集合 + 本行强制纳入后的手动拟合写入值（B 口径），勾选变化实时重算；已勾选行显示当前拟合结果，未勾选行显示勾上后的结果。
+- 预览复用 `ManualFitService.AnalyzeWithForcedSample` → `Analyze`，包含 `DriftFitter` 的离群/趋势逻辑；已有 ≥3 条参与样本时，本行仍可能被判离群挂起，预览值可能不变（这是真实写入行为）。
+- 所有实际写入统一经 `CorrectionPolicy.RoundOffsetSeconds`（两位、AwayFromZero）：`SettingsOffsetApplier.Apply` 与 `ManualFitService.Analyze` 两处调用；「当时偏移」「采用偏移」两列也显示两位小数，诊断值仍保留三位。
+- 插件页概览找不到 `README.md`：`.cipx` 由 SDK `CreateCipx` 打包整个 `$(OutputPath)`，`plugin/README.md` 通过 csproj `CopyToOutputDirectory=Always` 进入输出/包；部署时同时拷 `README.md` 到插件目录，重启后概览可加载。
+- 清理过时的分发指引文档与引用（README / HANDOFF / 更新说明-v1.1.0），只清当前树，不改写 git 历史、不强推。
+- `sample-manage-test` 37 → 43 条（采用偏移预览、两位小数）；三个项目 Release 构建 0 warning / 0 error。
+- 部署：2026-10-19 21:46 覆盖 `BellTimeCalibration.dll` / `deps.json` / `manifest.yml` / `README.md`（备份 `.bak-v1.1.0.0-preAdoptColumn`），21:47:02 启动横幅 `v1.1.1.0 就绪`；`.cipx` 已含 README.md。
+
 ---
 
 ## 9. 常用操作
@@ -354,13 +365,15 @@ cd '<git 树>\plugin\tools\TemplateTool';   dotnet build -c Release
 
 # ── 部署（必须先停进程，否则 DLL 被占用）──────────────────────────────
 $dst = '<便携版>\data\Plugins\belltime.calibration'
-Copy-Item "$dst\BellTimeCalibration.dll" "$dst\BellTimeCalibration.dll.bak-v1.0.5"   # 先备份当前版本
+Copy-Item "$dst\BellTimeCalibration.dll" "$dst\BellTimeCalibration.dll.bak-v1.1.0.0-preAdoptColumn"   # 先备份当前版本
+Copy-Item "$dst\manifest.yml" "$dst\manifest.yml.bak-v1.1.0.0-preAdoptColumn"
 Stop-Process -Name 'ClassIsland.Desktop' -Force; Start-Sleep 3
 Copy-Item '<工作树>\plugin\bin\Release\net8.0\BellTimeCalibration.dll' `
           '<工作树>\plugin\bin\Release\net8.0\BellTimeCalibration.deps.json' `
-          '<工作树>\plugin\manifest.yml' $dst -Force
+          '<工作树>\plugin\bin\Release\net8.0\manifest.yml' `
+          '<工作树>\plugin\bin\Release\net8.0\README.md' $dst -Force
 Start-Process '<便携版>\app-2.1.0.1-0\ClassIsland.Desktop.exe'
-# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.0.0 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
+# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.1.0 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
 
 # ── 看日志 / 看样本 ────────────────────────────────────────────────
 $cfg = '<便携版>\data\Config\Plugins\belltime.calibration'
@@ -394,7 +407,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 8. **别用「自动截取」做模板**：本机麦样本尾部可能有比真铃高 6~7 dB 的短瞬态（椅子/关门级），自动截取会截到环境噪声；模板要按实测区间手工截（当前模板取自 2026-10-07 实机录音，各 2.5 s）。
 9. **静默段被降噪压到 −87 dB**（旧手机样本甚至下溢）：任何**绝对阈值**判据必然失准，只能用相对峰值判据；这也是「起响前数字静默的候选一律排除」的原因。
 10. **样本勾选是旁挂文件**：`Logs/sample-exclusions.jsonl`（只追加、以最后一行为准）；删掉即恢复默认。**不要重写** `offset-samples.jsonl`——那是测量流水，也是离线分析的输入。
-11. **分发**：本地 git 提交 + 推送 `origin/main`；发版 = 打四段 tag（`a.b.c.d`，如 `1.1.0.0`），`.github/workflows/release.yml` 会自动构建 `.cipx` 并发 Release（正文 = 更新说明 + `CLASSISLAND_PKG_MD5`）。步骤见根目录《迁移与推送.md》。启动横幅的版本号直接读 `manifest.yml`（早先写死在 `Plugin.cs` 里，改版本时漏改会在日志里谎报版本）。
+11. **分发**：本地 git 提交 + 推送 `origin/main`；发版 = 打四段 tag（`a.b.c.d`，如 `1.1.1.0`），`.github/workflows/release.yml` 会自动构建 `.cipx` 并发 Release（正文 = 更新说明 + `CLASSISLAND_PKG_MD5`）。启动横幅的版本号直接读 `manifest.yml`（早先写死在 `Plugin.cs` 里，改版本时漏改会在日志里谎报版本）。
 12. **`CreateFromDirectory` 目标 zip 已存在会抛异常**（历史的打包脚本坑）：先删 zip。
 
 ---
@@ -407,6 +420,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 4. 下课铃与上课铃是否来自同一套打铃系统（同一钟）？（当前实现按用户口径**共用一条拟合序列**，不分开拟合）
 5. 运行中的内核二进制是否需要替换为真原版？
 6. 排障结束后关掉 `DebugDumpAudio`。
+7. **v1.1.1.0**：已本地提交/部署（2026-10-19），**待用户指令**再 `git push` 与打四段 tag；不要自动推送或发 Release。
 
 ---
 
@@ -415,8 +429,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 ```
 <git 树>\
 ├─ README.md                使用者向：安装、配置、原理、设置项表、目录结构、已知限制
-├─ 更新说明-v1.1.0.md        本版本完整改动清单（含设置项对照、文件清单、验证方式）
-├─ 迁移与推送.md             分发方式：提交 + 推送 + 打 tag 发版（CI 自动构建 .cipx）
+├─ 更新说明-v1.1.1.md        本版本完整改动清单（含设置项对照、文件清单、验证方式）
 ├─ docs/HANDOFF.md          ← 本文件（新会话从这里开始读）
 ├─ tools-harvest.ps1        开发期辅助脚本
 └─ plugin\                  插件源码（Templates 下是静音占位；tools 下是离线工具）
