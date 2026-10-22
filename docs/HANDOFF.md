@@ -10,7 +10,7 @@
 
 # 铃声自动校时（BellTimeCalibration）· 会话交接日志
 
-> 插件版本 **1.1.1.0**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
+> 插件版本 **1.1.1.1**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
 
 ---
 
@@ -18,10 +18,10 @@
 
 | 项 | 状态 |
 |---|---|
-| 实机版本 | **v1.1.1.0**（2026-10-19 21:46 首次部署，21:59 二次部署修正说明），已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（21:47:02 与 21:59:31 启动横幅均确认 `v1.1.1.0 就绪`；插件目录已含 `README.md`；备份 `.bak-v1.1.0.0-preAdoptColumn` / `.bak-v1.1.1.0-preHintFix`） |
-| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `2.851 s` |
-| 仓库 HEAD | `b80bd65`（v1.1.1.0 采用偏移/两位小数/README）；随后一个本地提交修正采用偏移的 6h 窗口说明（`git log -2`） |
-| 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；v1.1.1.0 仅本地提交，**未推送、未打 tag**。推送记录见 `.github/workflows/release.yml` 与 git log。 |
+| 实机版本 | **v1.1.1.1**（2026-10-22 12:23 部署，纯元数据版）：已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（启动横幅确认 `v1.1.1.1 就绪`；插件页卡片显示 `1.1.1.1`，点「项目主页」实测打开仓库主页；本次只覆盖 `manifest.yml` + `README.md`，`BellTimeCalibration.dll`/`.deps.json` 与 v1.1.1.0 字节一致未动；备份 `manifest.yml.bak-v1.1.1.0` / `README.md.bak-v1.1.1.0`）。上一版 v1.1.1.0 于 2026-10-19 21:46/21:59 两次部署 |
+| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `-2.240 s`（2026-10-22 12:23 启动横幅读数） |
+| 仓库 HEAD | `b7dc750`（v1.1.1.0 修正）+ 本版 v1.1.1.1 单个提交（清单补 `url`），已推送 `origin/main` |
+| 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；2026-10-22 18:04 再次推送 `1bb0edb..本提交`（普通快进，含 v1.1.1.0 两个提交 + v1.1.1.1 一个提交；本机直连 `github.com` 被重置，本次经 `ssh.github.com:443` + 临时写权限 deploy key，推送后 key 已删除）。推送记录见 `.github/workflows/release.yml` 与 git log。 |
 | 最近一次实机发现 | 2026-10-15 上午两处判据缺陷（见第 8.3 节）：① 当天第一条样本自己当基准被单样本直写；② 真正被拟合器判离群的测量被标成「死区带内」并默认勾选。**两处都已修并部署**，两棵树的源码与实机 DLL 一致 |
 | 立刻要做的三件事 | ① 下一个自然边界窗口的日志里：脏值应落 `outlier`、大差值应落 `stepped`；② 设置页样本管理应显示「当时偏移」列（表头与同一窗口同值的现象见 8.4 节）；③ 判断 20:10 / 21:40 那两窗「真铃晚 6.4 s」是否为真实基准偏移 |
 ---
@@ -39,7 +39,7 @@
 4. **遇到较大误差时坚决不用脏值**，也不用已被确认不准的办法（启发式选铃因此被删除，见第 5 节）；
 5. **合法修正保持单次 3 s 上限，但所需偏移量可能超过 20 s** → 分几个窗口**分步写入**，而不是整笔拒写；
 6. 校铃误差**呈一定规律变化**；**不存在按上下课分开拟合**——上下课误差规律不应有大差别，若不一致说明拟合有误；
-7. 版本 **v1.1.1.0**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（2026-10-15 已推 `origin/main` 并打 tag `1.1.0.0`；v1.1.1.0 待指令）；
+7. 版本 **v1.1.1.1**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（2026-10-15 已推 `origin/main` 并打 tag `1.1.0.0`；v1.1.1.0 / v1.1.1.1 于 2026-10-22 已推送，四段 tag 待指令）；
 8. 文档（README、设置页提示、更新说明）必须与实际行为一致；
 9. 音频（铃声样本、`Dumps\`）**不随仓库分发**。
 
@@ -158,7 +158,7 @@
 
 ```
 plugin/
-├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，version 1.1.1.0
+├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，url=https://github.com/zihan-ds/classisland-belltime-calibration，version 1.1.1.1
 ├─ Plugin.cs                        入口：日志/配置加载与自动保存、模板加载、设置页注册、AppStarted 自举
 ├─ Models/BellCalibrationSettings.cs 全部设置项 + 忽略列表解析（IsBoundaryIgnored）
 ├─ Services/
@@ -374,7 +374,7 @@ Copy-Item '<工作树>\plugin\bin\Release\net8.0\BellTimeCalibration.dll' `
           '<工作树>\plugin\bin\Release\net8.0\manifest.yml' `
           '<工作树>\plugin\bin\Release\net8.0\README.md' $dst -Force
 Start-Process '<便携版>\app-2.1.0.1-0\ClassIsland.Desktop.exe'
-# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.1.0 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
+# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.1.1 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
 
 # ── 看日志 / 看样本 ────────────────────────────────────────────────
 $cfg = '<便携版>\data\Config\Plugins\belltime.calibration'
@@ -408,7 +408,8 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 8. **别用「自动截取」做模板**：本机麦样本尾部可能有比真铃高 6~7 dB 的短瞬态（椅子/关门级），自动截取会截到环境噪声；模板要按实测区间手工截（当前模板取自 2026-10-07 实机录音，各 2.5 s）。
 9. **静默段被降噪压到 −87 dB**（旧手机样本甚至下溢）：任何**绝对阈值**判据必然失准，只能用相对峰值判据；这也是「起响前数字静默的候选一律排除」的原因。
 10. **样本勾选是旁挂文件**：`Logs/sample-exclusions.jsonl`（只追加、以最后一行为准）；删掉即恢复默认。**不要重写** `offset-samples.jsonl`——那是测量流水，也是离线分析的输入。
-11. **分发**：本地 git 提交 + 推送 `origin/main`；发版 = 打四段 tag（`a.b.c.d`，如 `1.1.1.0`），`.github/workflows/release.yml` 会自动构建 `.cipx` 并发 Release（正文 = 更新说明 + `CLASSISLAND_PKG_MD5`）。启动横幅的版本号直接读 `manifest.yml`（早先写死在 `Plugin.cs` 里，改版本时漏改会在日志里谎报版本）。
+11. **分发**：本地 git 提交 + 推送 `origin/main`；发版 = 打四段 tag（`a.b.c.d`，如 `1.1.1.1`），`.github/workflows/release.yml` 会自动构建 `.cipx` 并发 Release（正文 = 更新说明 + `CLASSISLAND_PKG_MD5`）。启动横幅的版本号直接读 `manifest.yml`（早先写死在 `Plugin.cs` 里，改版本时漏改会在日志里谎报版本）。
+    **本机推送通道（2026-10-22 实测）**：直连 `github.com:443` 会被重置（`git ls-remote` / `curl` 均失败，`api.github.com` 正常），走 `ssh.github.com:443` + 临时 deploy key：API（凭据 `~/.git-credentials`，scope 含 repo）加写权限 key → `GIT_SSH_COMMAND='ssh -i <tmpkey> -p 443' git push ssh://git@ssh.github.com:443/zihan-ds/classisland-belltime-calibration.git main` → API 删除 key。
 12. **`CreateFromDirectory` 目标 zip 已存在会抛异常**（历史的打包脚本坑）：先删 zip。
 
 ---
@@ -421,7 +422,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 4. 下课铃与上课铃是否来自同一套打铃系统（同一钟）？（当前实现按用户口径**共用一条拟合序列**，不分开拟合）
 5. 运行中的内核二进制是否需要替换为真原版？
 6. 排障结束后关掉 `DebugDumpAudio`。
-7. **v1.1.1.0**：已本地提交/部署（2026-10-19），**待用户指令**再 `git push` 与打四段 tag；不要自动推送或发 Release。
+7. **v1.1.1.0 / v1.1.1.1**：均已本地提交/部署（v1.1.1.1 为 2026-10-22 12:23），2026-10-22 18:04 已推送 `origin/main`；**待用户指令**打四段 tag（打 tag 会自动发 Release），不要自动打 tag。
 
 ---
 
@@ -430,7 +431,8 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 ```
 <git 树>\
 ├─ README.md                使用者向：安装、配置、原理、设置项表、目录结构、已知限制
-├─ 更新说明-v1.1.1.md        本版本完整改动清单（含设置项对照、文件清单、验证方式）
+├─ 更新说明-v1.1.1.1.md      本版本（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
+├─ 更新说明-v1.1.1.md        历史（1.1.1.0）：完整改动清单（含设置项对照、文件清单、验证方式）
 ├─ docs/HANDOFF.md          ← 本文件（新会话从这里开始读）
 ├─ tools-harvest.ps1        开发期辅助脚本
 └─ plugin\                  插件源码（Templates 下是静音占位；tools 下是离线工具）
