@@ -615,6 +615,13 @@ public class CalibrationRunner : IDisposable
                 ? $"闸门({ShortVerdict(verdict)})"
                 : $"模板 {rec.MatchedTemplate ?? "命中"}";
 
+            // v1.1.2.0：本次测量是否由模板命中**确认**——模板命中本身给出坐标，或闸门命中且
+            // 位置与模板锚点相差在 AnchorApertureSeconds 内（即闸门只是把模板圈定的那一击细化了起声沿）。
+            // 这个标记是「基准跳变确认」的准入条件之一，见 DriftFitter.SegmentRestartRequiresTemplate。
+            var templateConfirmed = templateAnchorLocal != null
+                                    && Math.Abs((tRingLocal - templateAnchorLocal.Value).TotalSeconds)
+                                        <= OnsetGate.AnchorApertureSeconds;
+
             // v1.0.4：一行短摘要。原先这一行把闸门/模板的完整判据又抄了一遍（300~400 字/行），
             // 而同样内容已经在上面那行与结构化历史里各有一份。
             Logger.Info(
@@ -643,7 +650,7 @@ public class CalibrationRunner : IDisposable
             // v0.6.1+：把「实测切换墙钟」与「实测铃响起响点」一并交给应用管线，用真实误差 e = t_ring − t_switch 做判据。
             // v0.10.2：走到这里的测量**必然来自起响沿闸门或模板匹配**（都带独立真伪判据），
             // 测量来源已由上面两条路径保证，因此应用管线不再需要「来源可信度」参数。
-            TryApplyCalibration(delta, tRingUtc, reachedUtc, window.Kind, window.BDisplay, config, rec,
+            TryApplyCalibration(delta, tRingUtc, templateConfirmed, reachedUtc, window.Kind, window.BDisplay, config, rec,
                 out var sampleRequired, out var sampleCurrent, out var sampleReason);
 
             // v1.0.1：把本次「所需偏移」样本按天落盘（同步写），使进程重启不丢当天序列，
@@ -721,6 +728,9 @@ public class CalibrationRunner : IDisposable
     /// </summary>
     /// <param name="deltaAbs">绝对口径的所需偏移（未观测到切换时的退化值）。</param>
     /// <param name="tRingUtc">物理响铃起响点（UTC）。</param>
+    /// <param name="templateConfirmed">
+    /// 本次测量的坐标是否由模板命中确认（v1.1.2.0，见 <see cref="DriftFitter.SegmentRestartRequiresTemplate"/>）。
+    /// </param>
     /// <param name="switchWallUtc">实测切换墙钟（UTC）；null = 未观测到切换。</param>
     /// <param name="boundaryKind">边界类型（中文），仅用于提醒文案与日志。</param>
     /// <param name="boundaryDisplay">课表边界 B_display，仅用于提醒文案与日志。</param>
@@ -731,6 +741,7 @@ public class CalibrationRunner : IDisposable
     private void TryApplyCalibration(
         TimeSpan deltaAbs,
         DateTime tRingUtc,
+        bool templateConfirmed,
         DateTime? switchWallUtc,
         string boundaryKind,
         DateTime boundaryDisplay,
@@ -804,7 +815,7 @@ public class CalibrationRunner : IDisposable
             requiredSeconds = required.TotalSeconds;
 
             // 偏移估计（v0.11.0）：写「近期样本中位数」；趋势外推仅在门槛满足时启用（见 DriftFitter 类注释）
-            _fitter.Add(tRingUtc.ToLocalTime(), required);
+            _fitter.Add(tRingUtc.ToLocalTime(), required, templateConfirmed);
 
             var predictedSeconds = _fitter.PredictSeconds(DateTime.Now) ?? required.TotalSeconds;
             var target = TimeSpan.FromSeconds(predictedSeconds);
@@ -817,6 +828,23 @@ public class CalibrationRunner : IDisposable
                 $"[校时] 拟合 所需{required.TotalSeconds:F3} 当前{currentOffset:F3} 预测{target.TotalSeconds:F3}" +
                 $" 差{diff.TotalSeconds:+0.000;-0.000;0.000} 样本{_fitter.SampleCount}/离散{_fitter.MaxDeviationSeconds:F3}" +
                 $" → {(shouldApply ? "写入" : "带内不写")}");
+
+            // 双峰复核（v1.1.2.0）：样本分成两堆时，中位数落在两簇之间的空档里、不代表任何真实状态。
+            // 必须排在离群复核**之前**：离群判据是拿「本次测量 − 中位数」比的，双峰时这个中位数本身
+            // 就是假的，此时报「离群」既误导使用者（看起来是本次测坏了），也会掩盖真正的问题。
+            // 实机 2026-10-26 14:40：4 个参与样本 −4.072/−3.220/+7.285/+7.912，中位数 2.033，
+            // 正确的 6.052 被判离群拒写、错误的 0.583 被接受，偏移从 7.60 被拖到 4.60；
+            // 此后 13 次连续拒写真值、段永不重开（两条错值彼此差 > 1.0s，凑不成跳变确认）。
+            if (_fitter.IsBimodal)
+            {
+                rec.Gate = "skipped";
+                rec.GateNote = $"bimodal（{_fitter.BimodalNote}）；{_fitter.LastNote}";
+                sampleReason = SampleReason.Bimodal;
+                Logger.Warn(
+                    $"[校时] 双峰拒写：本次测得所需偏移 {required.TotalSeconds:F3}s 未写入。" +
+                    $"{_fitter.BimodalNote}。请在设置页「样本管理」里复核参与拟合的样本（多半混入了另一声源/错误事件）");
+                return;
+            }
 
             // 离群复核（v1.1.0）：**测量本身**与本批稳健拟合差得太远 → 拒写。
             // 拦截点在拟合器里（见 DriftFitter.LastSampleWasOutlier），与「大误差」的区别是判据：

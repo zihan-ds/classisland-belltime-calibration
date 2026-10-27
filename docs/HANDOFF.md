@@ -10,7 +10,7 @@
 
 # 铃声自动校时（BellTimeCalibration）· 会话交接日志
 
-> 插件版本 **1.1.1.1**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
+> 插件版本 **1.1.2.0**（四段，与发布 tag 一致） · 交接目标：让新会话能**零上下文**接手继续开发与调参。
 
 ---
 
@@ -18,12 +18,13 @@
 
 | 项 | 状态 |
 |---|---|
-| 实机版本 | **v1.1.1.1**（2026-10-22 12:23 部署，纯元数据版）：已部署到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`（启动横幅确认 `v1.1.1.1 就绪`；插件页卡片显示 `1.1.1.1`，点「项目主页」实测打开仓库主页；本次只覆盖 `manifest.yml` + `README.md`，`BellTimeCalibration.dll`/`.deps.json` 与 v1.1.1.0 字节一致未动；备份 `manifest.yml.bak-v1.1.1.0` / `README.md.bak-v1.1.1.0`）。上一版 v1.1.1.0 于 2026-10-19 21:46/21:59 两次部署 |
-| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `-2.240 s`（2026-10-22 12:23 启动横幅读数） |
-| 仓库 HEAD | `b7dc750`（v1.1.1.0 修正）+ v1.1.1.1 提交（清单补 `url`）+ 本提交（发布记录）；四段 tag `1.1.1.1` 指向本提交 |
-| 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；2026-10-22 18:04 再次推送 `1bb0edb..本提交`（普通快进，含 v1.1.1.0 两个提交 + v1.1.1.1 一个提交；本机直连 `github.com` 被重置，本次经 `ssh.github.com:443` + 临时写权限 deploy key，推送后 key 已删除）；2026-10-22 20:05 打四段 tag `1.1.1.1`（指向本提交）由 CI 发 Release。推送记录见 `.github/workflows/release.yml` 与 git log。 |
-| 最近一次实机发现 | 2026-10-15 上午两处判据缺陷（见第 8.3 节）：① 当天第一条样本自己当基准被单样本直写；② 真正被拟合器判离群的测量被标成「死区带内」并默认勾选。**两处都已修并部署**，两棵树的源码与实机 DLL 一致 |
-| 立刻要做的三件事 | ① 下一个自然边界窗口的日志里：脏值应落 `outlier`、大差值应落 `stepped`；② 设置页样本管理应显示「当时偏移」列（表头与同一窗口同值的现象见 8.4 节）；③ 判断 20:10 / 21:40 那两窗「真铃晚 6.4 s」是否为真实基准偏移 |
+| 实机版本 | **v1.1.2.0**（2026-10-27 10:34:53 部署）：已覆盖到 `<ClassIsland 便携版根目录>\data\Plugins\belltime.calibration\`，启动横幅确认 `启动 铃声自动校时 v1.1.2.0 就绪｜偏移通道 应用设置·时间偏移（当前 6.300s）`；`BellTimeCalibration.dll` 194560 字节，旧 DLL 备份为 `.bak-v1.1.1.1`。上一版 v1.1.1.1（2026-10-22 12:23 的纯元数据版：只覆盖 `manifest.yml` + `README.md`，DLL 与 v1.1.1.0 字节一致）已被本次覆盖 |
+| 工作模式 | 非学习模式、**自动应用已开启**、当前偏移 `6.300 s`（2026-10-27 10:34 启动横幅读数） |
+| 仓库 HEAD | `833812b`（v1.1.1.1 发布记录）；**v1.1.2.0 尚未提交**——工作区改动 = `plugin/Services/` 下 `TemplateMatcher.cs` / `OnsetGate.cs` / `DriftFitter.cs` / `OffsetSampleStore.cs` / `CalibrationRunner.cs` + `plugin/manifest.yml`（`version: 1.1.2.0`）+ `plugin/tools/ReplayTool/Program.cs`（新增 `bell-match-test`）+ 文档；四段 tag `1.1.2.0` 未打、未推送（等用户指令） |
+| 本地 `.cipx` | `plugin/cipx/BellTimeCalibration.cipx`（805169 字节，MD5 `B0A9CB06952D3CD4ED23545EBE6EF127`，包内 manifest `version: 1.1.2.0`）；`plugin/cipx/` 已在 `.gitignore`，本地打包产物不入库，CI 打 tag 时会重新构建 |
+| 远程 / 推送 | **已推送**：`origin = https://github.com/zihan-ds/classisland-belltime-calibration.git`（公开），`main` 已跟踪 `origin/main`，2026-10-15 22:13 推送 `720dbbd..ee1974a`（普通快进，未用 force）；2026-10-22 18:04 再次推送 `1bb0edb..本提交`（普通快进，含 v1.1.1.0 两个提交 + v1.1.1.1 一个提交；本机直连 `github.com` 被重置，本次经 `ssh.github.com:443` + 临时写权限 deploy key，推送后 key 已删除）；2026-10-22 20:05 打四段 tag `1.1.1.1`（指向本提交）由 CI 发 Release。推送记录见 `.github/workflows/release.yml` 与 git log。**v1.1.2.0 尚未提交/推送/打 tag**（等用户指令） |
+| 最近一次实机发现 | 2026-10-26 全天「所需偏移」跨度 15.91 s（−4.07 ~ +11.84）而校铃真实漂移仅 0.1 s/小时量级 → 查出**测量选错事件**四项根因，已在 v1.1.2.0 修（见 8.9）。更早的 2026-10-15 两处判据缺陷见 8.3，均已修并部署 |
+| 立刻要做的三件事 | ① 观察 v1.1.2.0 部署后头几个自然窗口：`源=闸门(两窗一致→开关)` 是否稳定落在 relB ≈ −6.5 s、日志有无「双峰拒写」；② 若出现双峰告警，去设置页「样本管理」复核参与拟合的样本（多半混入另一声源），**不要**直接调门槛；③ 决定是否 `git commit` + 推送 + 打 tag `1.1.2.0` |
 ---
 
 ## 1. 目标与硬约束
@@ -39,7 +40,7 @@
 4. **遇到较大误差时坚决不用脏值**，也不用已被确认不准的办法（启发式选铃因此被删除，见第 5 节）；
 5. **合法修正保持单次 3 s 上限，但所需偏移量可能超过 20 s** → 分几个窗口**分步写入**，而不是整笔拒写；
 6. 校铃误差**呈一定规律变化**；**不存在按上下课分开拟合**——上下课误差规律不应有大差别，若不一致说明拟合有误；
-7. 版本 **v1.1.1.1**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（2026-10-15 已推 `origin/main` 并打 tag `1.1.0.0`；v1.1.1.0 / v1.1.1.1 于 2026-10-22 已推送，v1.1.1.1 已打四段 tag 发 Release，v1.1.1.0 未单独打 tag）；
+7. 版本 **v1.1.2.0**，分发 = 「本地 git 提交 + 推送 → 打四段 tag 由 CI 发 Release」，**push / 打 tag 需用户指令**（历史：2026-10-15 已推 `origin/main` 并打 tag `1.1.0.0`；v1.1.1.0 / v1.1.1.1 于 2026-10-22 已推送，v1.1.1.1 已打四段 tag 发 Release，v1.1.1.0 未单独打 tag；v1.1.2.0 已部署但**尚未提交、未打 tag**）；
 8. 文档（README、设置页提示、更新说明）必须与实际行为一致；
 9. 音频（铃声样本、`Dumps\`）**不随仓库分发**。
 
@@ -109,7 +110,11 @@
 | `CalibrationScheduler.MaxLeadSeconds` | 60.0 | 提前量上限 |
 | `CalibrationRunner.SeedLookbackHours` | 12.0 | 首次布防时恢复**最近 12 小时**的样本（v1.1.0 修，见 8.3）；**进食口径** = `OffsetSampleStore.IsSeedableForRuntime`：旁证与已拒写（`outlier` / `large-error`）一律不进估计器（v1.1.0.0 收严，见 8.5） |
 | `DriftFitter.OutlierRejectSeconds` | 2.0 | 与稳健拟合差超过它即判离群（不入列、不清空） |
-| `DriftFitter.SegmentRestartAgreements` / `SegmentRestartAgreementSeconds` | 2 / 1.0 | 连续两条彼此一致（≤1 s）才认定基准真跳变、重开样本段 |
+| `DriftFitter.BimodalGapSeconds` / `BimodalMinPerCluster` | 4.0 / 2 | **双峰拒写**（v1.1.2.0）：样本排序后最大间隔 ≥ 4 s 且两侧各 ≥ 2 个 → 判双峰、拒写并告警（`SampleReason.Bimodal`），判定在离群复核**之前** |
+| `DriftFitter.SegmentRestartRequiresTemplate` | true | **基准跳变确认需模板命中**（v1.1.2.0）：两条互相印证还不够，至少一条要来自模板命中（见 8.9 第 4 项） |
+| `DriftFitter.SegmentRestartAgreements` / `SegmentRestartAgreementSeconds` | 2 / 1.0 | 连续两条彼此一致（≤1 s）才认定基准真跳变、重开样本段（v1.1.2.0 起另需模板确认） |
+| `OnsetGate.PreferPeakOverRatio` | true | 强候选组内按**峰值**择优而非按起响比值（v1.1.2.0，见 8.9 第 2 项） |
+| `TemplateMatcher.StrongNcc` / `StrongSpectralMin` | 0.85 / 0.80 | NCC 与音色同时达到即免攻击沿校验、不再改去别处重采（v1.1.2.0，见 8.9 第 1 项） |
 | `DriftFitter.TrendMinSamples` / `TrendMinSpanHours` / `TrendMaxResidualSeconds` / `MaxExtrapolationHours` / `MaxSlopeSecondsPerHour` | 6 / 4 / 0.6 / 24 / 2.0 | 趋势外推的三项门槛 + 外推上限 + 斜率钳制 |
 
 `CurrentLead()`（`plugin/Services/CalibrationScheduler.cs:35`）：
@@ -139,9 +144,10 @@
    ↓
 ④ e = t_ring − t_switch  →  所需偏移 = 当前偏移 − e
    ↓
-⑤ DriftFitter.Add(测量)  →  PredictedSeconds(now)  →  diff = 预测 − 当前
+⑤ DriftFitter.Add(测量, templateConfirmed)  →  PredictedSeconds(now)  →  diff = 预测 − 当前
    ↓
-⑥ 写入决策链（**顺序即优先级**，v1.1.0 修过顺序）：
+⑥ 写入决策链（**顺序即优先级**，v1.1.0 修过顺序，v1.1.2.0 在最前加了双峰一步）：
+     0. 双峰？（样本最大间隔 ≥ 4 s 且两侧各 ≥ 2 个）→ 拒写，样本 `bimodal`（v1.1.2.0，见 8.9 第 3 项）
      1. 离群？（|测量 − 稳健拟合| > 2.0 s）→ 拒写，样本 `outlier`（默认不勾）
      2. 死区？（|diff| < 0.3 s）        → 不写，样本 `dead-zone`
      3. 大差值？(|diff| > 3 s)          → **步进**写入 ±3 s，样本 `stepped`（默认勾）+ 弹复核提醒
@@ -158,7 +164,7 @@
 
 ```
 plugin/
-├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，url=https://github.com/zihan-ds/classisland-belltime-calibration，version 1.1.1.1
+├─ manifest.yml                     id=belltime.calibration，apiVersion 2.0.0.0，url=https://github.com/zihan-ds/classisland-belltime-calibration，version 1.1.2.0
 ├─ Plugin.cs                        入口：日志/配置加载与自动保存、模板加载、设置页注册、AppStarted 自举
 ├─ Models/BellCalibrationSettings.cs 全部设置项 + 忽略列表解析（IsBoundaryIgnored）
 ├─ Services/
@@ -236,13 +242,15 @@ plugin/
 ```powershell
 $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 & $tool                     # 根命令：对 <工作树>\samples\ 或指定音频跑完整判定链
-& $tool estimate-test       # 步进写入的方向/边界/限幅、离群不入列也不清空样本段、连续两条一致才重开段、趋势门槛
+& $tool estimate-test       # 步进写入的方向/边界/限幅、离群不入列也不清空样本段、连续两条一致才重开段、趋势门槛；
+                           # v1.1.2.0 新增 8 条：双峰判定、跳变确认需模板、单声源散布不误判、孤立脏值不误判
 & $tool absolute-required-test   # 4 条退化口径
 & $tool notify-test         # 7 条提醒判定
 & $tool sample-manage-test  # 43 条样本管理（含跨天恢复、当时偏移列口径、采用偏移预览、两位小数、已拒写样本不得回灌估计器）
 & $tool dumps-clear-test    # 20 条「清除无用录音」删除/保留判据
 & $tool gate-reconcile-test # 1 条真实窗口 + 6 条合成分支 + 11 条夹具已丢失（打印「跳过」，只有真回归才失败）
 & $tool gate-guard          # 全量 dump：没有任何命中依赖「除以数字静默」的比值
+& $tool bell-match-test "<Dumps 目录>" "<模板目录>"   # v1.1.2.0：强匹配被攻击沿误拒次数、锚定闸门抓错事件数、相邻窗口差 >2.5s 的比例
 & $tool fitter / manual-fit / envelope / gate-scan / gate-reconcile   # 诊断类
 ```
 
@@ -266,7 +274,8 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 
 | 断言 | 规模 |
 |---|---|
-| `estimate-test` | 步进方向/边界/限幅、离群挂起、连续两条一致才重开段、趋势门槛 |
+| `estimate-test` | 步进方向/边界/限幅、离群挂起、连续两条一致才重开段、趋势门槛；**v1.1.2.0 加 8 条**（双峰判定、跳变确认需模板、单声源散布不误判、孤立脏值不误判） |
+| `bell-match-test` | v1.1.2.0 新增：强匹配被攻击沿误拒 **0** 次、锚定闸门抓错事件 **0** 个（182 个模板命中窗口）、相邻窗口差 >2.5 s 占 16/164 = 10%（见 8.9） |
 | `absolute-required-test` | 4 条退化口径 |
 | `notify-test` | 7 条提醒判定 + 无冷却 + 2 条冲突提醒 |
 | `sample-manage-test` | 43 条：默认勾选/人工覆盖/乱行容错 + 跨天恢复 4 条 + 当时偏移列 4 条 + 采用偏移预览/两位小数 6 条 + 进食口径 6 条 |
@@ -354,6 +363,64 @@ $tool = '<工作树>\plugin\tools\ReplayTool\bin\Release\net8.0\ReplayTool.exe'
 - 部署：2026-10-19 21:46 覆盖 `BellTimeCalibration.dll` / `deps.json` / `manifest.yml` / `README.md`（备份 `.bak-v1.1.0.0-preAdoptColumn`），21:47:02 启动横幅 `v1.1.1.0 就绪`；`.cipx` 已含 README.md。
 - 2026-10-19 复验（当天 19 条样本、8 条勾选）：勾选行及窗口外行预览 `2.77`；强制 16:20/16:30/20:10 三条窗口内离群行为 `2.52`（6h 窗口中位数变化），均与生产 `AnalyzeWithForcedSample` 一致；据此把「离群挂起」说明改为 6h 窗口/中位数，21:59 二次部署（备份 `.bak-v1.1.1.0-preHintFix`），启动横幅确认。
 
+### 8.9 2026-10-27：v1.1.2.0 修「偏移整天摇摆」（四项修复）
+
+**问题（2026-10-26 全天 20 个监听窗口的离线复算结论）**：同一天「所需偏移」跨度达 **15.91 s**（−4.07 ~ +11.84），
+而校铃钟真实漂移只有 **0.1 s/小时**量级。根因不是噪声，是**测量系统性地选错了事件**：
+
+- 真铃（模板 NCC 峰）稳定落在 relB ≈ **−6.5 s**（比标称边界早约 6.5 s），但起响沿闸门只在 **8/20** 个窗口选对；
+  错法三类：贴边界的小瞬态（6 窗，所需 +0.1~+0.7）、过早/过晚的别处事件（3 窗，所需 +9.2~+11.8）、其余 2 窗。
+- 双窗口复核（开关窗口 + 课表窗口）**不独立**：两窗中心只差一个「偏移」（当天 4.6~8.3 s），半窗都 ±8 s，
+  看的是同一批事件，几乎必然 Agree，**不能当交叉验证**。
+
+**四项修复**（每项的长注释都写在源码里，这里只列要点与实测数字）：
+
+1. **强匹配免攻击沿校验**（`Services/TemplateMatcher.cs`，新常量 `StrongNcc = 0.85` / `StrongSpectralMin = 0.80`）
+   - 攻击沿门槛（起响比值 ≥ 4×）是**相对**门槛，假设铃响前有安静基线。教室有人声时真铃的起响比值只有 1.0~3.7×，
+     而安静间隙的小瞬态能到 16.7×。实测：全体位置最高 NCC 落在真铃的有 **17/20**（NCC 0.83~0.98），
+     加上攻击沿门槛后只剩 **9/20**（其余掉到 0.25~0.53 → 报未命中），闸门因此失去锚点、退回 ±8 s 盲扫。
+   - 改为：NCC ≥ 0.85 **且**音色 ≥ 0.80 时跳过攻击沿校验（也不再「改去别处重采」）。
+     0.85 卡在真铃 0.83~0.98 与 2026-09-11 那个 0.804 假命中之间。
+2. **闸门组内按峰值择优**（`Services/OnsetGate.cs`，新常量 `PreferPeakOverRatio = true`）
+   - 旧判据按「起响比值」在强候选组里挑，而比值 = 峰值 ÷ 起响前 0.3 s 基线，**奖励的是背景安静而不是像铃**。
+     实例（2026-10-26 15:40 上课窗）：真铃 relB −6.25 s、峰值 −16.6 dBFS、比值 3.4×，输给 relB −0.25 s、
+     峰值 −19.2 dBFS、比值 **16.7×** 的瞬态，于是「所需偏移」从 6.5 变成 0.27。
+   - 改为组内按峰值挑（窗内最响的那一下）。
+3. **双峰拒写**（`Services/DriftFitter.cs`，新常量 `BimodalGapSeconds = 4.0` / `BimodalMinPerCluster = 2`；
+   `Services/OffsetSampleStore.cs` 新增 `SampleReason.Bimodal`）
+   - 稳健中位数在**双峰**样本上会给出既非真值、也不对应任何实际状态的中间值，而离群门以它为中心，
+     于是同时拒真纳假。实机 14:40 实例：参与样本 −4.072 / −3.220 / +7.285 / +7.912，中位数 **2.033**；
+     正确的 6.052 距中心 4.019 s 被判离群拒写，错误的 0.583 距中心 1.450 s 被接受，偏移从 7.60 被拖到 4.60；
+     此后 **13 次连续拒写真值**、段永不重开。
+   - 改为：排序后找最大间隔，若 ≥ 4.0 s 且两侧各 ≥ 2 个样本 → 判双峰，**拒写并告警**
+     （`SampleReason.Bimodal`，界面显示「双峰拒写」），提示用户去样本管理复核。
+     判定顺序在离群复核**之前**（双峰时「离群」这个标签是误导的）。
+4. **基准跳变确认需模板命中**（`Services/DriftFitter.cs`，新常量 `SegmentRestartRequiresTemplate = true`；
+   `CalibrationRunner` 新增 `templateConfirmed` 参数）
+   - 实机 09:40 测得 +7.971、10:10 测得 +7.912，两条**都是闸门选错事件**的错值，但彼此只差 0.059 s（＜ 1.0 s 容差）
+     而互相印证，触发「基准跳变确认」重开样本段，把偏移从 −3.10 直接改到 −0.10、再到 +2.90。
+     错值互相印证是最危险的伪一致——它们共享同一个系统性错误。
+   - 改为：跳变确认要求至少一条来自**模板命中**（`templateConfirmed` = 模板命中位置，或闸门命中位置落在
+     模板锚点 ±`OnsetGate.AnchorApertureSeconds` 内）。
+
+**验证**（`plugin/tools/ReplayTool`，新增子命令 `bell-match-test <Dumps 目录> <模板目录>`）：
+
+- ① 强匹配被攻击沿误拒：**0 次**（改前当天 20 窗只有 9 个能过）
+- ② 锚定闸门抓到别的事件：**0 个**（182 个模板命中窗口）
+- ③ 相邻窗口差 ＞ 2.5 s 的比例：**16/164 = 10%**（改前 2026-10-26 当天 20 窗里 9 对 ＞ 2.5 s，45%）
+- `estimate-test` 新增 8 条断言（双峰判定、模板确认门槛、单声源散布不误判、孤立脏值不误判），全部通过
+- 2026-10-26 当天：改前 12 个模板命中窗口的所需偏移跨度 15.91 s，改后 **11/12 落在 7.60±2.5 s**
+  （唯一离群是 08:10 那个「持续人声段里模板误匹配」的固有难例，改前也是同一个值）
+
+**已知遗留**（如实记下，别当成已解决）：
+
+- 08:10 那类「整窗持续人声、铃响淹没其中」的窗口，模板仍可能误匹配到人声段（NCC 0.907）。
+  这类窗口需要更强的判据（如要求模板匹配段的包络衰减形状符合钟声），本次未做。
+- 模板命中率约一半（今天 12/20），未命中的窗口仍走无锚点闸门；第 2 项修复让这类窗口按峰值选，
+  比改前好，但仍不如有锚点时可靠。
+
+**状态**：四项修复与 `bell-match-test` 均已在工作区完成；**已部署（2026-10-27 10:34:53，启动横幅 `v1.1.2.0 就绪`）**，`.cipx` 已在本地打好（不入库），**尚未 git 提交、未打 tag、未推送**（等用户指令）。
+
 ---
 
 ## 9. 常用操作
@@ -374,7 +441,7 @@ Copy-Item '<工作树>\plugin\bin\Release\net8.0\BellTimeCalibration.dll' `
           '<工作树>\plugin\bin\Release\net8.0\manifest.yml' `
           '<工作树>\plugin\bin\Release\net8.0\README.md' $dst -Force
 Start-Process '<便携版>\app-2.1.0.1-0\ClassIsland.Desktop.exe'
-# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.1.1 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
+# 启动日志应出现： [校时] 启动 铃声自动校时 v1.1.2.0 就绪｜偏移通道 …｜提醒 …｜手动拟合 …
 
 # ── 看日志 / 看样本 ────────────────────────────────────────────────
 $cfg = '<便携版>\data\Config\Plugins\belltime.calibration'
@@ -423,6 +490,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 5. 运行中的内核二进制是否需要替换为真原版？
 6. 排障结束后关掉 `DebugDumpAudio`。
 7. **v1.1.1.0 / v1.1.1.1**：均已本地提交/部署（v1.1.1.1 为 2026-10-22 12:23），2026-10-22 18:04 已推送 `origin/main`，20:05 打四段 tag `1.1.1.1` 由 CI 发 Release；v1.1.1.0 未单独打 tag（改动含在 1.1.1.1 的 Release 里）。**已完成**。
+8. **v1.1.2.0（四项修复，见 8.9）**：源码与 `manifest.yml` 已改完、`bell-match-test` 已跑通、**已于 2026-10-27 10:34:53 部署到实机**（启动横幅 `v1.1.2.0 就绪`），`.cipx` 本地已打包（`plugin/cipx/`，不入库）。**剩下三步等用户指令**：① 观察「双峰拒写」日志是否按预期出现（若频繁出现说明样本里混了另一声源，应人工复核而不是继续调门槛）；② git 提交 + 推送 `origin/main`；③ 打四段 tag `1.1.2.0` 由 CI 发 Release，并补《更新说明-v1.1.2.0.md》。
 
 ---
 
@@ -431,7 +499,7 @@ Select-String -Path '<便携版>\data\Settings.json' -Pattern 'TimeOffsetSeconds
 ```
 <git 树>\
 ├─ README.md                使用者向：安装、配置、原理、设置项表、目录结构、已知限制
-├─ 更新说明-v1.1.1.1.md      本版本（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
+├─ 更新说明-v1.1.1.1.md      历史（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
 ├─ 更新说明-v1.1.1.md        历史（1.1.1.0）：完整改动清单（含设置项对照、文件清单、验证方式）
 ├─ docs/HANDOFF.md          ← 本文件（新会话从这里开始读）
 ├─ tools-harvest.ps1        开发期辅助脚本

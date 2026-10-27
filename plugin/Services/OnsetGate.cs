@@ -107,6 +107,22 @@ public static class OnsetGate
     /// </summary>
     public const double MinRiseDb = 6.0;
 
+    /// <summary>
+    /// 强候选组内的择优口径（v1.1.2.0）：<c>true</c> = 按**峰值**取最优，<c>false</c> = 按比值取最优（旧行为）。
+    ///
+    /// 为什么改（2026-10-26 全天 20 个 dump 复算）：比值 = 峰值 ÷ 起响前 0.3 s 基线，它奖励的是
+    /// **背景安静**而不是**像铃**。教室本来有人声时真铃的比值只有 1.0~3.7×，而安静间隙里一个小瞬态
+    /// 能到 16.7× —— 15:40 上课窗口，真铃（relB −6.25 s，峰值 −16.6 dBFS，比值 3.4×）输给了一个
+    /// 更轻的瞬态（relB −0.25 s，峰值 −19.2 dBFS，比值 **16.7×**），于是「所需偏移」从 6.5 变成 0.27。
+    /// 当天 20 个窗口里闸门测对 8 个，测错的 12 个中 6 个是「贴边界的小瞬态」、4 个是「提前/过晚的别处事件」。
+    ///
+    /// 峰值口径为什么更接近真值：校铃是本窗口**最响的持续事件**，这个事实与背景噪声无关；
+    /// 而「强候选组」（<see cref="DominanceDb"/>）已经把弱事件排除在外，组内再按峰值取最优，
+    /// 等于回答「窗内最响的那一下」。代价是「渐强噪声比真铃更响」这类窗口会选错——
+    /// 但那条路由模板锚点 + <see cref="LoudPeakDb"/> 门槛负责，不再依赖比值竞赛。
+    /// </summary>
+    public const bool PreferPeakOverRatio = true;
+
     private static readonly double LoudPeakRms = Math.Pow(10, LoudPeakDb / 20.0);
     private static readonly double LoudRiseRatio = Math.Pow(10, MinRiseDb / 20.0);
 
@@ -309,7 +325,9 @@ public static class OnsetGate
             .Where(c => c.Peak >= AbsoluteMinRms && (c.Ratio >= RatioMin || c.Loud))
             .ToList();
 
-        // 第二趟：先框定「强候选组」，再在组内按比值取最优（见 DominanceDb 注释）。
+        // 第二趟：先框定「强候选组」，再在组内取最优。
+        // 组内口径由 <see cref="PreferPeakOverRatio"/> 决定：v1.1.2.0 起按峰值（窗内最响的那一下），
+        // 旧行为按比值（背景最安静的那一下）—— 理由见该常量的注释。
         var strongCount = 0;
         var strongPeakMax = 0.0;
         var bestLoud = false;   // 选中点是否靠「高声压起响」入选（决定最终门槛与日志措辞）
@@ -322,7 +340,8 @@ public static class OnsetGate
                 if (c.Peak < strongFloor)
                     continue;
                 strongCount++;
-                if (c.Ratio > bestRatio)
+                var better = PreferPeakOverRatio ? c.Peak > bestPeak : c.Ratio > bestRatio;
+                if (better)
                 {
                     bestRatio = c.Ratio;
                     bestIdx = c.Idx;
@@ -450,7 +469,7 @@ public static class OnsetGate
                $"（峰值 {ToDb(bestPeak):F1} dBFS）；" +
                $"候选 {candidates.Count} 个 / 合格 {qualified.Count} 个（含高声压起响 {candidates.Count(c => c.Loud)} 个）" +
                $" / 强候选组 {strongCount} 个" +
-               $"（组内峰值上限 {ToDb(strongPeakMax):F1} dBFS，容差 {DominanceDb:F1} dB）" +
+               $"（组内{(PreferPeakOverRatio ? "按峰值" : "按比值")}择优，峰值上限 {ToDb(strongPeakMax):F1} dBFS，容差 {DominanceDb:F1} dB）" +
                (silentBaselineCandidates > 0 ? $"；已排除 {silentBaselineCandidates} 个基线静默候选" : "") +
                segmentNote + "；" +
                $"锚点=边界{(double.IsNaN(anchorDelta) ? "n/a" : $"{anchorDelta:+0.000;-0.000;0.000}s")}";

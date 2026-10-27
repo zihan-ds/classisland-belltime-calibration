@@ -45,7 +45,16 @@ public enum SampleReason
     SideSchedule,
 
     /// <summary>双窗口冲突（v1.0.5）→ 旁证：不写偏移、默认不参与。</summary>
-    SideConflict
+    SideConflict,
+
+    /// <summary>
+    /// v1.1.2.0：样本集呈**双峰**（两簇中心相距 ≥ <c>DriftFitter.BimodalGapSeconds</c>）→ 本次不写偏移。
+    ///
+    /// 与 <see cref="Outlier"/> 的区别很重要：离群说的是「**这次测量**不可信」，双峰说的是
+    /// 「**这批样本**分成两堆、中位数落在空档里，不代表任何真实状态」。本次测量本身可能是对的，
+    /// 但它参与的拟合没有意义，所以照样拒写；默认不参与手动拟合（人工复核后可以勾上）。
+    /// </summary>
+    Bimodal
 }
 
 /// <summary>
@@ -104,14 +113,15 @@ public readonly record struct OffsetSample(
     public bool IsSideEvidence => Reason is SampleReason.SideSchedule or SampleReason.SideConflict;
 
     /// <summary>
-    /// 判据已判为**脏值、拒写**的样本（v1.1.0.0 增补）：离群（<see cref="SampleReason.Outlier"/>）与
-    /// 旧版的「大误差拒写」（<see cref="SampleReason.LargeError"/>）。
+    /// 判据已判为**不可信、拒写**的样本（v1.1.0.0 增补）：离群（<see cref="SampleReason.Outlier"/>）、
+    /// 旧版的「大误差拒写」（<see cref="SampleReason.LargeError"/>）、以及 v1.1.2.0 的
+    /// 双峰（<see cref="SampleReason.Bimodal"/>，此时不可信的是**整批样本**而非本次测量）。
     ///
     /// 与 <see cref="IsSideEvidence"/> 的区别：旁证是「判据没拿到开关窗口的测量」，这类是「拿到了，但测量本身不可信」。
     /// 两类都**不该回到运行时估计器**，但判据不同，界面上也要分开显示（<c>拒写（旧数据，原因未记）</c> 属于第三类：
     /// 连原因都没记的旧行，无法判定，照旧当普通测量处理）。
     /// </summary>
-    public bool IsRejected => Reason is SampleReason.Outlier or SampleReason.LargeError;
+    public bool IsRejected => Reason is SampleReason.Outlier or SampleReason.LargeError or SampleReason.Bimodal;
 }
 
 /// <summary>
@@ -201,6 +211,7 @@ public static class OffsetSampleStore
         SampleReason.Stepped => "步进写入",
         SampleReason.SideSchedule => "仅课表命中（旁证）",
         SampleReason.SideConflict => "双窗口冲突（旁证）",
+        SampleReason.Bimodal => "双峰拒写",
         _ => sample.Applied ? "写入过"
             : sample.InDeadZone ? "死区带内（未写）"
             : "拒写（旧数据，原因未记）"
@@ -234,6 +245,7 @@ public static class OffsetSampleStore
         SampleReason.Stepped => "stepped",
         SampleReason.SideSchedule => "side-schedule",
         SampleReason.SideConflict => "side-conflict",
+        SampleReason.Bimodal => "bimodal",
         _ => ""
     };
 
@@ -247,6 +259,7 @@ public static class OffsetSampleStore
         "stepped" => SampleReason.Stepped,
         "side-schedule" => SampleReason.SideSchedule,
         "side-conflict" => SampleReason.SideConflict,
+        "bimodal" => SampleReason.Bimodal,
         _ => SampleReason.Unknown
     };
 

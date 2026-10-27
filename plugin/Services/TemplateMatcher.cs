@@ -65,6 +65,28 @@ public static class TemplateMatcher
     private const double AttackRatioMin = 4.0;
 
     /// <summary>
+    /// 「强匹配免攻击沿」的 NCC 门槛（v1.1.2.0）。
+    ///
+    /// 为什么需要（2026-10-26 全天 20 个 dump 复算）：<see cref="AttackRatioMin"/> 是**相对**门槛，
+    /// 它假设「铃响之前有一段安静基线」。教室本来就吵、或铃响时底下一直有人声时，这个前提不成立：
+    /// 实测真铃处的起响比值只有 1.0~3.7×，而安静间隙里一个小瞬态能到 16.7×。于是模板把真铃
+    /// 判成「连续噪声中的伪匹配」并改去别处找——20 个窗口里「全体最高 NCC 落在真铃」有 17 个
+    /// （NCC 0.83~0.98），加上攻击沿门槛后只剩 9 个，其余 NCC 掉到 0.25~0.53 报未命中，
+    /// 闸门因此失去锚点、退回 ±8 s 盲扫，选到别的事件（当天 12/20 个窗口测错）。
+    ///
+    /// 判据：NCC 与音色**同时**很高时，波形与音色已经足以回答「这段就是我们的铃」，
+    /// 攻击沿（只回答「起响够不够突然」）不再有否决权。0.85 的依据：真铃实测 NCC 0.83~0.98，
+    /// 而 2026-09-11 那个假命中只有 0.804 —— 门槛卡在两者之间。音色门槛取 0.80（真铃实测 0.79~0.98）。
+    /// </summary>
+    private const double StrongNcc = 0.85;
+
+    /// <summary>
+    /// 「强匹配免攻击沿」的音色余弦门槛（见 <see cref="StrongNcc"/>）：真铃实测 0.79~0.98。
+    /// 音色是这里唯一能排除「包络像、但不是我们这套钟」的判据，所以与 NCC 同时达标才免检。
+    /// </summary>
+    private const double StrongSpectralMin = 0.80;
+
+    /// <summary>
     /// 在捕获缓冲的 [_fromSample, _toSample) 区间内搜索模板的最佳对齐。
     /// </summary>
     /// <param name="template">铃声模板。</param>
@@ -107,31 +129,44 @@ public static class TemplateMatcher
         var fineTo = Math.Min(toSample, fineStart + radius);
         var (refined, ncc) = FineAlign(template, capture, captureLength, fineFrom, fineTo);
 
-        // ── 2b) 攻击沿优先重采（v0.9.3）──
+        // ── 3) 音色确认（先算，供「强匹配免攻击沿」判据用）──
+        var specLen = Math.Min(tplLen, (int)(BellTemplate.SpectrumWindowSeconds * WavReader.TargetSampleRate));
+        var captureSpectrum = BellTemplate.ComputeSpectrum(capture, refined, specLen);
+        var spectral = BellTemplate.CosineSimilarity(captureSpectrum, template.Spectrum);
+
+        // ── 强匹配免攻击沿（v1.1.2.0）──
+        // 见 StrongNcc 的注释：NCC 与音色同时很高时，攻击沿不再有否决权，也不再改去别处重采。
+        // 必须在下面的「2b 攻击沿优先重采」之前判定 —— 那一步正是把真铃换成别处的那只手。
+        var strong = ncc >= StrongNcc && spectral >= StrongSpectralMin;
+
+        // ── 2b) 攻击沿优先重采（v0.9.3；v1.1.2.0 起强匹配跳过）──
         // v0.9.2 是「先取最高 NCC，再校验攻击沿」，于是真正有攻击沿的匹配点根本没被考虑过：
         // 实机 2026-09-12 08:50 窗口，NCC 0.864 落在无攻击沿的噪声段（起响处比值 1.0×）→ 整块被拒，
         // 而真铃（起响处比值 21×）在它后面却从未被检查。现在改为「只在有攻击沿的位置里取最高 NCC」。
-        if (!CheckAttack(capture, captureLength, refined).Passed)
+        // v1.1.2.0：仅对**非强匹配**生效 —— 强匹配的位置本身就是对的，再去找「更有攻击沿的别处」
+        // 只会把它换成窗内的瞬态（2026-10-26 全天实测，见 StrongNcc 注释）。
+        var attack = CheckAttack(capture, captureLength, refined);
+        if (!strong && !attack.Passed)
         {
             var alt = FindAttackOnsetNear(template, capture, captureLength, fromSample, toSample, refined);
             if (alt.SampleIndex >= 0)
             {
                 refined = alt.SampleIndex;
                 ncc = alt.Ncc;
+
+                // 换了位置就要重算音色：新位置是不是同一套钟，得重新确认
+                captureSpectrum = BellTemplate.ComputeSpectrum(capture, refined, specLen);
+                spectral = BellTemplate.CosineSimilarity(captureSpectrum, template.Spectrum);
+                attack = CheckAttack(capture, captureLength, refined);
             }
         }
 
-        // ── 3) 音色确认 ──
-        var specLen = Math.Min(tplLen, (int)(BellTemplate.SpectrumWindowSeconds * WavReader.TargetSampleRate));
-        var captureSpectrum = BellTemplate.ComputeSpectrum(capture, refined, specLen);
-        var spectral = BellTemplate.CosineSimilarity(captureSpectrum, template.Spectrum);
-
-        // ── 4) 攻击沿校验（v0.9.2）──
-        var attack = CheckAttack(capture, captureLength, refined);
-
-        var accepted = ncc >= nccMin && spectral >= spectralMin && attack.Passed;
+        var accepted = ncc >= nccMin && spectral >= spectralMin && (strong || attack.Passed);
+        var attackNote = strong
+            ? $"（NCC ≥ {StrongNcc:F2} 且音色 ≥ {StrongSpectralMin:F2}，按强匹配免攻击沿校验）"
+            : attack.Passed ? "" : "，攻击沿不足（起响处峰值未超过前段基线 4 倍，疑为连续噪声中的伪匹配）";
         var note = $"{template.Label}：NCC {ncc:F3}（阈值 {nccMin:F2}），音色 {spectral:F3}（阈值 {spectralMin:F2}）" +
-                   (attack.Passed ? "" : "，攻击沿不足（起响处峰值未超过前段基线 4 倍，疑为连续噪声中的伪匹配）") +
+                   attackNote +
                    $"{(accepted ? " → 命中" : " → 未达阈值")}";
 
         return new TemplateMatch(

@@ -56,6 +56,10 @@ public static class Program
         if (args.Length > 0 && string.Equals(args[0], "gate-reconcile-test", StringComparison.OrdinalIgnoreCase))
             return GateReconcileTest(args);
 
+        // v1.1.2.0 四项修复的回归断言（bell-match-test <Dumps 目录> <模板目录>）
+        if (args.Length > 0 && string.Equals(args[0], "bell-match-test", StringComparison.OrdinalIgnoreCase))
+            return BellMatchTest(args);
+
         // 退化口径换算的回归断言（absolute-required-test）
         if (args.Length > 0 && string.Equals(args[0], "absolute-required-test", StringComparison.OrdinalIgnoreCase))
             return AbsoluteRequiredTest();
@@ -444,7 +448,187 @@ public static class Program
     }
 
     /// <summary>
-    /// 双窗口复核（v1.0.4 增补）：对单个 dump 按生产口径跑「开关窗口」与「课表窗口」两次闸门，并给出复核结论。
+    /// v1.1.2.0 四项修复的回归断言（bell-match-test &lt;Dumps 目录&gt; &lt;模板目录&gt;）。
+    ///
+    /// 用**实机 dump** 验证（不是构造数据），并且走**生产口径**：
+    /// 先模板匹配，命中就把它的位置当锚点交给闸门（<c>CalibrationRunner</c> 正是这么调用的）。
+    /// <list type="number">
+    /// <item><description>① 强匹配免攻击沿：NCC ≥ 0.85 且音色 ≥ 0.80 的模板命中不得因攻击沿被拒。
+    /// 2026-10-26 全天实测：改前 20 个窗口只有 9 个能过攻击沿（其余 NCC 掉到 0.25~0.53 报未命中），
+    /// 改后今天 12 个模板窗口全部命中。</description></item>
+    /// <item><description>② 锚定闸门不跑到别处：给了锚点后，闸门选中点必须落在锚点 ±SegmentLookbackSeconds
+    /// 之内（回溯到段起点会让位置比光圈再往前提几秒，这是设计内的；跑到窗内另一个事件才是错）。</description></item>
+    /// <item><description>③ 结果收敛：**同一天**模板命中的窗口里，「所需偏移」= −(闸门位置 − 边界) 应聚成一簇，
+    /// 最大偏离中位 ≤ 3.5s。这是用户关心的那个数：2026-10-26 改前当天跨度 15.91s，改后 12 个模板窗口
+    /// 全部落在 6.6~9.6s（跨度 3.0s）。跨天不能一起算——不同日期的真实偏移本来就不同。</description></item>
+    /// </list>
+    /// ③ 双峰拒写 / ④ 跳变需模板确认在 estimate-test 里断言（纯逻辑，不需要音频）。
+    /// </summary>
+    private static int BellMatchTest(string[] args)
+    {
+        if (args.Length < 3 || !Directory.Exists(args[1]) || !Directory.Exists(args[2]))
+        {
+            Console.WriteLine("用法：ReplayTool bell-match-test <Dumps 目录> <模板目录>");
+            return 1;
+        }
+
+        var templates = new List<BellTemplate>();
+        foreach (var f in Directory.GetFiles(args[2], "*.wav").OrderBy(f => f))
+        {
+            var isClass = Path.GetFileNameWithoutExtension(f).Contains("上课");
+            var tpl = BellTemplate.LoadFromTemplateFile(f, isClass ? "class" : "break", isClass ? "上课铃" : "下课铃", out var loadNote);
+            if (tpl != null)
+                templates.Add(tpl);
+            else
+                Console.WriteLine($"  [跳过] {loadNote}");
+        }
+
+        if (templates.Count == 0)
+        {
+            Console.WriteLine("  没有可用模板。");
+            return 1;
+        }
+
+        var files = Directory.GetFiles(args[1], "*.wav").OrderBy(f => f).ToList();
+        Console.WriteLine($"v1.1.2.0 四项修复断言：{files.Count} 个 dump，{templates.Count} 个模板");
+
+        var strongHits = 0;          // ① 强匹配生效次数
+        var strongRejected = 0;      // ① 强匹配被攻击沿误拒（必须为 0）
+        var tplWindows = 0;          // 模板命中的窗口数
+        var anchoredAway = 0;        // ② 锚定闸门跑到别的事件上（必须为 0）
+        var byDay = new Dictionary<string, List<double>>();   // ③ 每天各自的「所需偏移」
+        var failures = 0;
+
+        foreach (var f in files)
+        {
+            var name = Path.GetFileNameWithoutExtension(f);
+            var m = System.Text.RegularExpressions.Regex.Match(name, @"^\d{8}-(\d{2})(\d{2})(\d{2})-(\S+)-B(\d{2})(\d{2})(\d{2})$");
+            if (!m.Success)
+                continue;
+
+            var start = new TimeSpan(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value));
+            var boundary = new TimeSpan(int.Parse(m.Groups[5].Value), int.Parse(m.Groups[6].Value), int.Parse(m.Groups[7].Value));
+            var boundaryInDump = (boundary - start).TotalSeconds;
+            if (boundaryInDump < 0)
+                boundaryInDump += 24 * 3600;
+
+            var samples = WavReader.ReadMono48k(f, out _);
+            if (samples == null)
+                continue;
+
+            var audio = new CaptureAudio();
+            var fileStartLocal = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local);
+            audio.Write(samples, fileStartLocal.ToUniversalTime());
+            var boundaryWallLocal = fileStartLocal.AddSeconds(boundaryInDump);
+
+            var rate = CaptureAudio.SampleRate;
+            var fromSample = (int)Math.Max(0, (boundaryInDump - 12) * rate);
+            var toSample = (int)Math.Min(samples.Length, (boundaryInDump + 12) * rate);
+
+            // ── 生产口径的模板匹配（与 RingCandidateSelector 同阈值）──
+            TemplateMatch? best = null;
+            foreach (var tpl in templates)
+            {
+                var mm = TemplateMatcher.Match(tpl, audio.Samples, audio.Length, fromSample, toSample, 0.60, 0.45);
+                if (mm.Ncc >= 0.85 && mm.SpectralSim >= 0.80)
+                {
+                    strongHits++;
+                    if (!mm.Accepted)
+                    {
+                        strongRejected++;
+                        Console.WriteLine($"  [失败] {name} {tpl.Label}：NCC {mm.Ncc:F3} 音色 {mm.SpectralSim:F3} 应免攻击沿却未命中");
+                    }
+                }
+
+                if (mm.Accepted && mm.OnsetSampleIndex >= 0 && (best == null || mm.Ncc > best.Value.Ncc))
+                    best = mm;
+            }
+
+            if (best == null)
+                continue;
+
+            var anchorWall = audio.WallTimeAt(best.Value.OnsetSampleIndex);
+            if (anchorWall == null)
+                continue;
+
+            tplWindows++;
+            var day = name.Substring(0, 8);
+            if (!byDay.TryGetValue(day, out var dayList))
+                byDay[day] = dayList = new List<double>();
+
+            // ── 生产口径的闸门：带锚点 ──
+            var gate = OnsetGate.Find(audio, boundaryWallLocal, anchorWall.Value.ToLocalTime(), out _);
+            if (gate == null)
+            {
+                // 锚定光圈内没有合格起响沿：生产链路上会退化成「用模板位置」，不算跑偏
+                dayList.Add(-(anchorWall.Value.ToLocalTime() - boundaryWallLocal).TotalSeconds);
+                continue;
+            }
+
+            var gateSec = (gate.Value.OnsetUtc.ToLocalTime() - boundaryWallLocal).TotalSeconds;
+            var anchorSec = (anchorWall.Value.ToLocalTime() - boundaryWallLocal).TotalSeconds;
+            // 回溯（SegmentLookbackSeconds）会把位置从锚点往前推，这是设计内的；
+            // 但推到「比光圈还早一个回溯窗」以外，就说明它抓的是窗内另一个事件。
+            var limit = OnsetGate.AnchorApertureSeconds + OnsetGate.SegmentLookbackSeconds;
+            if (Math.Abs(gateSec - anchorSec) > limit)
+            {
+                anchoredAway++;
+                Console.WriteLine($"  [失败] {name}：锚定闸门抓到别的事件（锚 {anchorSec:+0.00}s → 选中 {gateSec:+0.00}s，" +
+                                  $"上限 ±{limit:F1}s）");
+            }
+
+            dayList.Add(-gateSec);
+        }
+
+        // ── ③ 相邻窗口的测量差（摇摆的直接度量）──
+        // 不用「全天中位 ±X」：一天里真实偏移本身会变（人工校准、基准跳变），全天中位不代表任何时刻的真值。
+        // 摇摆的定义是**相邻两个窗口给出互相矛盾的结果** —— 它们只隔 10~40 分钟，钟不可能真的走掉几秒。
+        const double jumpSeconds = 2.5;
+        var jumps = new List<(string Day, double Delta, string A, string B)>();
+        foreach (var (day, list) in byDay.OrderBy(kv => kv.Key))
+        {
+            for (var i = 1; i < list.Count; i++)
+            {
+                var d = Math.Abs(list[i] - list[i - 1]);
+                if (d > jumpSeconds)
+                    jumps.Add((day, d, $"{list[i - 1]:F2}", $"{list[i]:F2}"));
+            }
+        }
+
+        var pairs = byDay.Values.Sum(l => Math.Max(0, l.Count - 1));
+        var jumpRatio = pairs == 0 ? 0.0 : (double)jumps.Count / pairs;
+
+        Console.WriteLine();
+        Console.WriteLine($"  ① 强匹配（NCC ≥ 0.85 且音色 ≥ 0.80）：{strongHits} 次，其中被攻击沿误拒 {strongRejected} 次");
+        Console.WriteLine($"  ② 模板命中 {tplWindows} 个窗口，锚定闸门抓到别的事件 {anchoredAway} 个");
+        Console.WriteLine($"  ③ 相邻窗口差 ＞ {jumpSeconds:F1}s 的 {jumps.Count}/{pairs} 对（{jumpRatio:P0}）");
+        foreach (var j in jumps.Take(12))
+            Console.WriteLine($"      {j.Day}：{j.A} → {j.B}（差 {j.Delta:F2}s）");
+
+        if (strongRejected > 0)
+            failures++;
+        if (anchoredAway > 0)
+            failures++;
+        // 门槛依据：2026-10-26 改前 20 个窗口的相邻差里有 9 对 ＞ 2.5s（45%），是当天偏移在
+        // −4.07~+11.84 之间来回跳的直接体现；改后 12 个模板窗口只剩 1 对（08:10 那个固有难例）。
+        // 取 20%：真回归时（攻击沿重新毙掉真铃、闸门退回盲扫）这个比例会立刻回到 40% 以上。
+        if (jumpRatio > 0.20)
+        {
+            failures++;
+            Console.WriteLine($"  [失败] 相邻窗口差 ＞ {jumpSeconds:F1}s 的比例 {jumpRatio:P0} ＞ 20%：测量仍在摇摆");
+        }
+
+        if (failures == 0)
+        {
+            Console.WriteLine("  断言通过：强匹配免攻击沿生效、锚定闸门不跑偏、所需偏移收敛成一簇。");
+            return 0;
+        }
+
+        Console.WriteLine($"  断言失败 {failures} 项。");
+        return 7;
+    }
+
+
     ///
     /// 窗口中心怎么来的：dump 文件名给的是**布防时刻**，而布防发生在显示域边界前 20 s，
     /// 显示域 = 真墙钟 + 偏移 ⇒ 开关（内核真正切换）在文件内 +20 s 处，标称课表边界再往后 +偏移。
@@ -740,11 +924,51 @@ public static class Program
 
         Console.WriteLine();
         Console.WriteLine("③ 连续两次一致的新基准 → 重开样本段（人工校准 / 换信号源）");
+        // v1.1.2.0：重开段还要求至少一条来自模板命中（见 DriftFitter.SegmentRestartRequiresTemplate）。
+        // 先走「两条都不是模板命中」这条路：彼此一致也不许重开（2026-10-26 09:40/10:10 两条错值
+        // 只差 0.059s 就互相印证、把偏移从 −3.10 拽到 −0.10，正是这里要拦的情形）。
         fitter.Add(baseAt.AddHours(5), TimeSpan.FromSeconds(20.0));
         Check(fitter.LastSampleWasOutlier && fitter.SampleCount == 4, $"第一条新基准先当离群挂起：{fitter.SampleCount} 个样本仍为旧段");
         fitter.Add(baseAt.AddHours(6), TimeSpan.FromSeconds(20.2));
-        Check(fitter.SampleCount == 2, $"★ 第二条与它一致（差 0.2s）→ 重开样本段，{fitter.SampleCount} 个样本");
+        Check(fitter.SampleCount == 4 && fitter.LastSampleWasOutlier,
+            $"★ 两条都不是模板命中 → 即使彼此只差 0.2s 也不重开样本段（仍 {fitter.SampleCount} 个）");
+
+        // 再来一条与挂起值一致的**模板命中**测量 → 允许重开
+        fitter.Add(baseAt.AddHours(7), TimeSpan.FromSeconds(20.1), templateConfirmed: true);
+        Check(fitter.SampleCount == 2, $"★ 模板命中确认后重开样本段，{fitter.SampleCount} 个样本");
         Check(fitter.MedianSeconds is { } m2 && Math.Abs(m2 - 20.1) < 0.05, $"新段中位数 {fitter.MedianSeconds:F3}s（期望 20.1）");
+
+        Console.WriteLine();
+        Console.WriteLine("③b 双峰检测：两簇中心相距 ≥ 4.0s 时中位数不代表任何真实状态（v1.1.2.0）");
+        // 2026-10-26 14:40 实机实例：4 个参与样本 −4.072 / −3.220 / +7.285 / +7.912，
+        // 中位数 = 2.033，正确的 6.052 距中心 4.019s 被判离群拒写、错误的 0.583 距中心 1.450s 被接受。
+        // 这种「两簇同时在列」只可能来自 Seed（当天 jsonl 恢复，不做离群过滤）或人工勾选——
+        // 逐条 Add 的路径上，第二条那簇早就被离群门拦在门外了。
+        var bimodal = new DriftFitter();
+        bimodal.Seed(new[]
+        {
+            (baseAt, -4.072),
+            (baseAt.AddHours(1), -3.220),
+            (baseAt.AddHours(2), 7.285),
+            (baseAt.AddHours(3), 7.912),
+        });
+        Check(bimodal.IsBimodal, $"★ 两簇（−4.07/−3.22 与 +7.29/+7.91）→ 判双峰");
+        Check(bimodal.MedianSeconds is { } mb && Math.Abs(mb - 2.033) < 0.01,
+            $"中位数落在两簇空档里：{bimodal.MedianSeconds:F3}s（这正是「不代表任何真实状态」的那个值）");
+        Check(bimodal.BimodalNote?.Contains("双峰") == true, "双峰说明可读（供日志与设置页）");
+
+        // 单声源散布 1.8s 不许误判双峰
+        var spread = new DriftFitter();
+        for (var i = 0; i < 6; i++)
+            spread.Add(baseAt.AddHours(i), TimeSpan.FromSeconds(-3.0 + 0.36 * i));
+        Check(!spread.IsBimodal, $"单声源散布 1.8s → 不判双峰（{spread.MaxDeviationSeconds:F3}s）");
+
+        // 一个孤立脏值也不许判双峰（那簇只有 1 个样本）
+        var lone = new DriftFitter();
+        for (var i = 0; i < 4; i++)
+            lone.Add(baseAt.AddHours(i), TimeSpan.FromSeconds(-3.0 + 0.05 * i));
+        lone.Add(baseAt.AddHours(5), TimeSpan.FromSeconds(30.0));
+        Check(!lone.IsBimodal, $"孤立脏值（1 个样本的簇）→ 不判双峰，仍按离群处理（{lone.SampleCount} 个样本）");
 
         Console.WriteLine();
         Console.WriteLine("④ 趋势门槛：6 样本 / 跨度 4h / 残差 0.6s");

@@ -8,10 +8,10 @@
 | 项 | 值 |
 |---|---|
 | 插件 ID | `belltime.calibration` |
-| 版本 | **1.1.1.1**（四段，与发布 tag `1.1.1.1` 一致） |
+| 版本 | **1.1.2.0**（四段，与发布 tag `1.1.2.0` 一致） |
 | apiVersion | 2.0.0.0（ClassIsland 2.x） |
 | 平台 | Windows（miniaudio/WASAPI，需要可用的默认输入设备） |
-| 本版本更新 | **[更新说明-v1.1.1.1.md](更新说明-v1.1.1.1.md)**（清单补 `url`，插件页「项目主页」指向 GitHub） |
+| 本版本更新 | v1.1.2.0 的四项修复（强匹配免攻击沿校验、闸门按峰值择优、双峰拒写、跳变确认需模板命中）见 [docs/HANDOFF.md 8.9](docs/HANDOFF.md)；上一版发布说明 [更新说明-v1.1.1.1.md](更新说明-v1.1.1.1.md)（清单补 `url`，插件页「项目主页」指向 GitHub） |
 
 ---
 
@@ -200,11 +200,11 @@ plugin/                       插件源码（.NET 8）
    └─ ReplayTool/             回放工具：对已采集的边界录音（dump）重跑完整判定链（先模板锚点，再并排打印老行为 ±8s 闸门与 v1.1.0 锚定 ±3s 闸门）；
                               fitter/manual-fit 复算偏移估计；gate-reconcile / gate-scan / envelope 诊断；
                               gate-reconcile-test / absolute-required-test / sample-manage-test / notify-test /
-                              gate-guard / estimate-test / dumps-clear-test 七套离线断言
+                              gate-guard / estimate-test / dumps-clear-test / bell-match-test 八套离线断言
 
 docs/HANDOFF.md               开发交接记录（含完整调试历程与实测数据）
 更新说明-v1.1.1.md             历史（1.1.1.0）：采用偏移列、两位小数写入、打包 README
-更新说明-v1.1.1.1.md           本版本（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
+更新说明-v1.1.1.1.md           历史（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
 tools-harvest.ps1             批量收割录音里的铃声段并互为对照
 ```
 
@@ -345,7 +345,8 @@ ReplayTool absolute-required-test                    # 退化口径换算 4 条�
 ReplayTool sample-manage-test                        # 样本管理数据层 43 条（含人工标记、乱行容错、当时偏移列口径、采用偏移预览、两位小数、已拒写样本不得回灌估计器）
 ReplayTool notify-test                               # 人工审核提醒的开关/阈值判定 7 条
 ReplayTool gate-guard <Dumps 目录>                   # 全量 dump：没有任何命中依赖「除以数字静默」的比值
-ReplayTool estimate-test                             # v1.1.0 估计器 12 条：离群只标记不清空、连续两条一致才重开、步进限幅与死区
+ReplayTool estimate-test                             # v1.1.0 估计器 12 条：离群只标记不清空、连续两条一致才重开、步进限幅与死区；v1.1.2.0 追加 8 条（双峰判定、跳变确认需模板、单声源散布不误判、孤立脏值不误判）
+ReplayTool bell-match-test <Dumps 目录> <模板目录>   # v1.1.2.0 四项修复的回归断言：强匹配被攻击沿误拒 0 次、锚定闸门抓错事件 0 个、相邻窗口差 >2.5 s 的比例
 ReplayTool dumps-clear-test                          # 「清除无用录音」的删除与保留判据 20 条（近期 / 断言夹具 / 非 wav / 子目录一律不动）
 ```
 

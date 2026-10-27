@@ -3,6 +3,8 @@ bin/
 obj/
 *.user
 *.suo
+# .cipx 由 CI（tag 构建）重新生成，本地打包产物不入库
+plugin/cipx/
 
 # 调试转存与运行日志（含音频，且可能含环境声音，不入库）
 Dumps/
