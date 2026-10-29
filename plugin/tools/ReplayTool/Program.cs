@@ -144,10 +144,11 @@ public static class Program
         Console.WriteLine($"搜索区间：[{fromSample / (double)CaptureAudio.SampleRate:F2}s ~ {toSample / (double)CaptureAudio.SampleRate:F2}s]（静置 {RingCandidateSelector.SettleSkipSeconds:F1}s 之后）");
 
         var note = "";
+        var peakNcc = double.NaN;
         var match = fromSample < toSample
-            ? RingCandidateSelector.SelectByTemplate(templates, audio, fromSample, toSample, boundaryWallLocal, tolerate, 0.60, 0.45, out note)
+            ? RingCandidateSelector.SelectByTemplate(templates, audio, fromSample, toSample, boundaryWallLocal, tolerate, 0.60, 0.45, out peakNcc, out note)
             : null;
-        Console.WriteLine($"模板匹配：{(match != null ? $"命中 {match.Value.Label} @ {match.Value.OnsetSampleIndex / (double)CaptureAudio.SampleRate:F3}s NCC={match.Value.Ncc:F3} 音色={match.Value.SpectralSim:F3}" : "未命中")}");
+        Console.WriteLine($"模板匹配：{(match != null ? $"命中 {match.Value.Label} @ {match.Value.OnsetSampleIndex / (double)CaptureAudio.SampleRate:F3}s NCC={match.Value.Ncc:F3} 音色={match.Value.SpectralSim:F3}" : $"未命中（全窗最高 NCC {peakNcc:F3}{(peakNcc < TemplateMatcher.NoBellNcc ? "，疑为未响铃" : "，铃在但没过判据")}）")}");
         Console.WriteLine($"  明细：{note}");
 
         DateTime? anchorLocal = match != null
@@ -497,6 +498,8 @@ public static class Program
         var tplWindows = 0;          // 模板命中的窗口数
         var anchoredAway = 0;        // ② 锚定闸门跑到别的事件上（必须为 0）
         var byDay = new Dictionary<string, List<double>>();   // ③ 每天各自的「所需偏移」
+        var noBellWindows = new List<string>();               // ④ 全窗最高 NCC ＜ NoBellNcc：疑为未响铃
+        var bellButRejectedWindows = new List<string>();      // ④ 铃在但没过判据
         var failures = 0;
 
         foreach (var f in files)
@@ -527,9 +530,25 @@ public static class Program
 
             // ── 生产口径的模板匹配（与 RingCandidateSelector 同阈值）──
             TemplateMatch? best = null;
+            var windowPeakNcc = double.NegativeInfinity;
             foreach (var tpl in templates)
             {
                 var mm = TemplateMatcher.Match(tpl, audio.Samples, audio.Length, fromSample, toSample, 0.60, 0.45);
+
+                // v1.2.0.0：PeakNcc 是「未被攻击沿重采改写」的最高 NCC，必须恒 ≥ 最终 Ncc ——
+                // 它一旦被重采污染，「本窗有没有铃」的判断就会把「铃在但没过判据」误报成「未响铃」。
+                if (!double.IsNaN(mm.PeakNcc))
+                {
+                    if (mm.PeakNcc < mm.Ncc - 1e-9)
+                    {
+                        failures++;
+                        Console.WriteLine($"  [失败] {name} {tpl.Label}：PeakNcc {mm.PeakNcc:F3} ＜ Ncc {mm.Ncc:F3}（被重采污染）");
+                    }
+
+                    if (mm.PeakNcc > windowPeakNcc)
+                        windowPeakNcc = mm.PeakNcc;
+                }
+
                 if (mm.Ncc >= 0.85 && mm.SpectralSim >= 0.80)
                 {
                     strongHits++;
@@ -545,7 +564,18 @@ public static class Program
             }
 
             if (best == null)
+            {
+                // v1.2.0.0 旁证口径：全窗最高 NCC 低于 NoBellNcc 判「疑为未响铃」，否则「铃在但没过判据」。
+                if (!double.IsNegativeInfinity(windowPeakNcc))
+                {
+                    if (windowPeakNcc < TemplateMatcher.NoBellNcc)
+                        noBellWindows.Add(name);
+                    else
+                        bellButRejectedWindows.Add(name);
+                }
+
                 continue;
+            }
 
             var anchorWall = audio.WallTimeAt(best.Value.OnsetSampleIndex);
             if (anchorWall == null)
@@ -567,14 +597,15 @@ public static class Program
 
             var gateSec = (gate.Value.OnsetUtc.ToLocalTime() - boundaryWallLocal).TotalSeconds;
             var anchorSec = (anchorWall.Value.ToLocalTime() - boundaryWallLocal).TotalSeconds;
-            // 回溯（SegmentLookbackSeconds）会把位置从锚点往前推，这是设计内的；
-            // 但推到「比光圈还早一个回溯窗」以外，就说明它抓的是窗内另一个事件。
-            var limit = OnsetGate.AnchorApertureSeconds + OnsetGate.SegmentLookbackSeconds;
+            // v1.2.0.0：回溯与归位都被限制在锚点光圈内，所以落点**必须**落在 ±AnchorApertureSeconds。
+            // 改前这里写的是「光圈 + 回溯窗 = 11.0s」，等于默认放行「回溯把坐标拖出光圈」——
+            // 那正是 2026-10-29 14:50 偏早 3.52s、14:40 偏晚 4.60s 的成因。
+            var limit = OnsetGate.AnchorApertureSeconds + 0.05;
             if (Math.Abs(gateSec - anchorSec) > limit)
             {
                 anchoredAway++;
-                Console.WriteLine($"  [失败] {name}：锚定闸门抓到别的事件（锚 {anchorSec:+0.00}s → 选中 {gateSec:+0.00}s，" +
-                                  $"上限 ±{limit:F1}s）");
+                Console.WriteLine($"  [失败] {name}：锚定闸门跑出锚点光圈（锚 {anchorSec:+0.00}s → 选中 {gateSec:+0.00}s，" +
+                                  $"上限 ±{limit:F2}s）");
             }
 
             dayList.Add(-gateSec);
@@ -604,6 +635,12 @@ public static class Program
         Console.WriteLine($"  ③ 相邻窗口差 ＞ {jumpSeconds:F1}s 的 {jumps.Count}/{pairs} 对（{jumpRatio:P0}）");
         foreach (var j in jumps.Take(12))
             Console.WriteLine($"      {j.Day}：{j.A} → {j.B}（差 {j.Delta:F2}s）");
+        Console.WriteLine($"  ④ 模板未命中 {noBellWindows.Count + bellButRejectedWindows.Count} 个窗口：" +
+                          $"疑为未响铃 {noBellWindows.Count} 个 / 铃在但没过判据 {bellButRejectedWindows.Count} 个");
+        foreach (var n in noBellWindows.Take(8))
+            Console.WriteLine($"      疑为未响铃：{n}");
+        foreach (var n in bellButRejectedWindows.Take(8))
+            Console.WriteLine($"      铃在但没过判据：{n}");
 
         if (strongRejected > 0)
             failures++;
@@ -956,6 +993,27 @@ public static class Program
         Check(bimodal.MedianSeconds is { } mb && Math.Abs(mb - 2.033) < 0.01,
             $"中位数落在两簇空档里：{bimodal.MedianSeconds:F3}s（这正是「不代表任何真实状态」的那个值）");
         Check(bimodal.BimodalNote?.Contains("双峰") == true, "双峰说明可读（供日志与设置页）");
+
+        // ③c 启动恢复时的双峰修剪（v1.2.0.0）：同一次 Seed 加上 trimBimodal 就必须丢掉较旧那簇。
+        // 不修剪的后果（实机推演）：恢复进来就双峰 → 此后每个窗口都被双峰拒写 → 而拒写的样本进不了
+        // _samples → 双峰要等旧簇滑出 6h 窗口才消失，等于最长冻 6 小时。
+        var trimmed = new DriftFitter();
+        trimmed.Seed(new[]
+        {
+            (baseAt, -4.072),
+            (baseAt.AddHours(1), -3.220),
+            (baseAt.AddHours(2), 7.285),
+            (baseAt.AddHours(3), 7.912),
+        }, trimBimodal: true);
+        Check(!trimmed.IsBimodal, $"★ 启动恢复 trimBimodal=true → 双峰解除（IsBimodal={trimmed.IsBimodal}）");
+        Check(trimmed.SampleCount == 2, $"丢掉较旧的 2 个样本、保留较新的 2 个（现 {trimmed.SampleCount} 个）");
+        Check(trimmed.MedianSeconds is { } mt && Math.Abs(mt - 7.598) < 0.01,
+            $"修剪后中位数回到较新那簇：{trimmed.MedianSeconds:F3}s（期望 7.599，不再是两簇中间的 2.033）");
+        Check(trimmed.LastNote?.Contains("已丢弃较旧") == true, "修剪动作写进日志说明");
+
+        // 反向：不加 trimBimodal 时保持原语义（手动拟合要让用户看到真实双峰，不能被悄悄修剪）
+        Check(bimodal.SampleCount == 4, $"trimBimodal 默认 false → 4 个样本原样保留（现 {bimodal.SampleCount} 个）");
+
 
         // 单声源散布 1.8s 不许误判双峰
         var spread = new DriftFitter();

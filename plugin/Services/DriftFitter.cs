@@ -144,8 +144,12 @@ public sealed class DriftFitter
     /// 在 16:20 变成 23 个 = 11 + 11 + 1）。
     /// </summary>
     /// <param name="history">历史样本（按时间升序）。</param>
+    /// <param name="trimBimodal">
+    /// v1.2.0.0：恢复后若样本呈双峰，丢掉**较旧**那一簇再重算（只给运行时估计器用，见 <see cref="TrimOldestCluster"/>）。
+    /// 默认 false —— 手动拟合要让用户看到真实的双峰，不能被悄悄修剪。
+    /// </param>
     /// <returns>实际导入的样本数。</returns>
-    public int Seed(IEnumerable<(DateTime At, double RequiredSec)> history)
+    public int Seed(IEnumerable<(DateTime At, double RequiredSec)> history, bool trimBimodal = false)
     {
         lock (_sync)
         {
@@ -167,13 +171,61 @@ public sealed class DriftFitter
             if (count > 0)
             {
                 // 锁内直读字段：属性 getter 会再取同一把锁（可重入，但没必要）
-                var noteBefore = _lastNote;
                 Recompute();
-                LastNote = $"已从当天历史恢复 {count} 个样本；{_lastNote ?? noteBefore}";
+                var trimNote = trimBimodal ? TrimOldestCluster() : "";
+                LastNote = $"已从当天历史恢复 {count} 个样本；{trimNote}{_lastNote}";
             }
 
             return count;
         }
+    }
+
+    /// <summary>
+    /// 启动恢复后的双峰修剪（v1.2.0.0）：样本分成两簇时丢掉**较旧**那一簇，只留较新的。
+    ///
+    /// 为什么（2026-10-29）：<see cref="IsBimodal"/> 的语义是「本次不写偏移」，用于拦单次可疑测量是对的；
+    /// 但它在**启动恢复**时会把整个插件锁死——恢复进来的样本若呈双峰，此后每个窗口都被判双峰拒写，
+    /// 而拒写的样本又进不了 <see cref="_samples"/>，双峰要等旧簇滑出 6h 窗口才自行消失（最长冻结 6 小时）。
+    /// 双峰在启动时的正确解释是「今天校铃钟被校时过，旧基准作废」——保留较新那簇才符合物理。
+    /// 调用方必须已持有 <see cref="_sync"/>；返回一句话说明（未修剪返回空串）。
+    /// </summary>
+    private string TrimOldestCluster()
+    {
+        if (!IsBimodal || _samples.Count < BimodalMinPerCluster * 2)
+            return "";
+
+        // 与 DetectBimodal 同口径：排序后找最大间隔
+        var sorted = _samples.OrderBy(s => s.OffsetSec).ToList();
+        var gapIdx = -1;
+        var gap = 0.0;
+        for (var i = 1; i < sorted.Count; i++)
+        {
+            var d = sorted[i].OffsetSec - sorted[i - 1].OffsetSec;
+            if (d > gap)
+            {
+                gap = d;
+                gapIdx = i;
+            }
+        }
+
+        if (gapIdx < BimodalMinPerCluster || sorted.Count - gapIdx < BimodalMinPerCluster || gap < BimodalGapSeconds)
+            return "";
+
+        var low = sorted.Take(gapIdx).ToList();
+        var high = sorted.Skip(gapIdx).ToList();
+
+        // 「哪簇更新」按中位时刻判断：校时跳变后新基准必然在后
+        var lowMid = low.OrderBy(s => s.At).ElementAt(low.Count / 2).At;
+        var highMid = high.OrderBy(s => s.At).ElementAt(high.Count / 2).At;
+        var keep = highMid >= lowMid ? high : low;
+        var drop = highMid >= lowMid ? low : high;
+
+        _samples.Clear();
+        _samples.AddRange(keep.OrderBy(s => s.At));
+        _pending = null;
+        Recompute();
+
+        return $"启动恢复发现样本呈双峰（间隔 {gap:F3}s），已丢弃较旧的 {drop.Count} 个样本、保留较新的 {keep.Count} 个；";
     }
 
     /// <summary>当前参与估计的样本数。</summary>

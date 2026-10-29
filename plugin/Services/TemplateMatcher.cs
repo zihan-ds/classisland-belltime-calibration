@@ -14,6 +14,11 @@ namespace BellTimeCalibration.Services;
 /// <param name="OnsetSampleIndex">匹配到的起响点（捕获缓冲内的采样索引）。</param>
 /// <param name="OnsetSecondsFromRangeStart">起响点相对搜索区间起点的秒数（便于日志与换算）。</param>
 /// <param name="Note">说明（中文，供日志）。</param>
+/// <param name="PeakNcc">
+/// 全区间**未经攻击沿重采**的最高 NCC（v1.2.0.0）：<see cref="Ncc"/> 在非强匹配且攻击沿不足时
+/// 会被「攻击沿优先重采」换成别处的位置，值可能大幅下降；判断「本窗到底有没有铃」必须看这个
+/// 未被改写过的数（见 <see cref="NoBellNcc"/>）。
+/// </param>
 public readonly record struct TemplateMatch(
     string TemplateId,
     string Label,
@@ -22,7 +27,8 @@ public readonly record struct TemplateMatch(
     bool Accepted,
     int OnsetSampleIndex,
     double OnsetSecondsFromRangeStart,
-    string Note);
+    string Note,
+    double PeakNcc = double.NaN);
 
 /// <summary>
 /// 模板匹配器（v0.9.0，纯逻辑、可独立自测）。
@@ -87,6 +93,18 @@ public static class TemplateMatcher
     private const double StrongSpectralMin = 0.80;
 
     /// <summary>
+    /// 「本窗根本没响铃」的 NCC 上限（v1.2.0.0）：全窗最高 NCC 低于该值时，日志直接给出
+    /// 「疑为未响铃」而不是让运维去猜是门槛太严还是测量跑偏。
+    ///
+    /// 依据（2026-10-29 下午 5 个离群窗口的实测）：确实没响铃的三个窗（14:40/15:30/16:20 下课）
+    /// 全窗最高 NCC 只有 0.035 / 0.038 / 0.037（另两个 0.132 / 0.326）；而真铃在的窗口是 0.87~0.94。
+    /// 0.35 卡在「没铃」的 0.04~0.33 与「铃在但被判据拒掉」的 0.25~0.53 之间——
+    /// **这两段有重叠**（弱铃也会掉到 0.25~0.33），所以日志措辞是「疑为」而非断言，
+    /// 它只回答「该不该怀疑铃没响」，不改变任何写入判据。
+    /// </summary>
+    public const double NoBellNcc = 0.35;
+
+    /// <summary>
     /// 在捕获缓冲的 [_fromSample, _toSample) 区间内搜索模板的最佳对齐。
     /// </summary>
     /// <param name="template">铃声模板。</param>
@@ -128,6 +146,7 @@ public static class TemplateMatcher
         var fineFrom = Math.Max(fromSample, fineStart - radius);
         var fineTo = Math.Min(toSample, fineStart + radius);
         var (refined, ncc) = FineAlign(template, capture, captureLength, fineFrom, fineTo);
+        var peakNcc = ncc;   // v1.2.0.0：留一份「未被攻击沿重采改写」的最高 NCC，供「本窗有没有铃」判断
 
         // ── 3) 音色确认（先算，供「强匹配免攻击沿」判据用）──
         var specLen = Math.Min(tplLen, (int)(BellTemplate.SpectrumWindowSeconds * WavReader.TargetSampleRate));
@@ -153,6 +172,8 @@ public static class TemplateMatcher
             {
                 refined = alt.SampleIndex;
                 ncc = alt.Ncc;
+                if (ncc > peakNcc)
+                    peakNcc = ncc;
 
                 // 换了位置就要重算音色：新位置是不是同一套钟，得重新确认
                 captureSpectrum = BellTemplate.ComputeSpectrum(capture, refined, specLen);
@@ -177,7 +198,8 @@ public static class TemplateMatcher
             accepted,
             refined,
             (refined - fromSample) / (double)WavReader.TargetSampleRate,
-            note);
+            note,
+            peakNcc);
     }
 
     /// <summary>

@@ -386,8 +386,15 @@ public static class OnsetGate
         // 那时定位不到起点，**保持选中击**（宁可不动，也不能把坐标扔进噪声里）。
         var segmentNote = "";
         var segmentFloor = bestPeak * Math.Pow(10, -SegmentDropDb / 20.0);
-        var lookbackLimit = Math.Max(settle, bestIdx - (int)(SegmentLookbackSeconds * rate));
         var holdSamples = (int)(SegmentHoldSeconds * rate);
+        // v1.2.0.0：给了模板锚点时，回溯**不得把坐标拖出锚点光圈**。
+        // 实测（2026-10-29）：光圈是锚 ±3.0s（AnchorApertureSeconds），而回溯上限是 8.0s，
+        // 于是「回溯到段起点 + 攻击沿归位」把落点推到离模板 3.5~4.6s 的地方——
+        // 14:50 偏早 3.52s（闸门 dump 内 22.632s vs 模板 26.522s）、14:40 偏晚 4.60s，
+        // 两个窗都因此被判离群拒写。模板已经回答了「铃就在这里」，回溯只该在同一次铃声内部微调。
+        var lookbackLimit = anchorWallLocal == null
+            ? Math.Max(settle, bestIdx - (int)(SegmentLookbackSeconds * rate))
+            : Math.Max(gateFrom, bestIdx - (int)(SegmentLookbackSeconds * rate));
         var segmentStart = bestIdx;   // 最后一次「确认仍在段内」的位置
         var hitLookbackLimit = false;
         for (var probe = bestIdx - stepSamples; ; probe -= stepSamples)
@@ -411,8 +418,11 @@ public static class OnsetGate
 
         if (hitLookbackLimit)
         {
-            segmentNote = $"；这段声音向前超过 {SegmentLookbackSeconds:F1}s 仍未回落到 {SegmentDropDb:F1} dB 以下，" +
-                          "定位不到起点，保持选中击";
+            segmentNote = anchorWallLocal == null
+                ? $"；这段声音向前超过 {SegmentLookbackSeconds:F1}s 仍未回落到 {SegmentDropDb:F1} dB 以下，" +
+                  "定位不到起点，保持选中击"
+                : $"；这段声音向前超过锚点光圈 {AnchorApertureSeconds:F1}s 仍未回落到 {SegmentDropDb:F1} dB 以下，" +
+                  "定位不到起点，保持选中击（不越出光圈）";
         }
         else if (segmentStart < bestIdx)
         {
@@ -428,6 +438,8 @@ public static class OnsetGate
         // 一个都没找到（渐强声、或坐标本来就在声里）就保持不动、不加说明。
         var attackSamples = Math.Max(1, (int)(AttackWindowSeconds * rate));
         var attackLimit = Math.Min(audio.Length - attackSamples, bestIdx + holdSamples);
+        if (anchorWallLocal != null)
+            attackLimit = Math.Min(attackLimit, gateTo);   // v1.2.0.0：归位同样不越出光圈
         for (var probe = bestIdx; probe <= attackLimit; probe += stepSamples)
         {
             if (Rms(probe, Math.Min(audio.Length, probe + attackSamples)) < segmentFloor)

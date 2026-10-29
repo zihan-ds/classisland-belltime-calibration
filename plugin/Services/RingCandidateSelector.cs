@@ -47,6 +47,9 @@ public static class RingCandidateSelector
     /// <param name="searchWindow">起响点允许的偏差半窗（±秒）。</param>
     /// <param name="nccMin">NCC 阈值。</param>
     /// <param name="spectralMin">音色相似度阈值。</param>
+    /// <param name="peakNcc">
+    /// 全区间最高 NCC（v1.2.0.0，未命中时也给出）：供调用方区分「本窗根本没响铃」与「铃在但判据没过」。
+    /// </param>
     /// <param name="note">判定说明（中文，供日志，含各模板得分）。</param>
     /// <returns>命中的最佳匹配；无命中返回 null。</returns>
     public static TemplateMatch? SelectByTemplate(
@@ -58,9 +61,11 @@ public static class RingCandidateSelector
         TimeSpan searchWindow,
         double nccMin,
         double spectralMin,
+        out double peakNcc,
         out string note)
     {
         note = "无模板";
+        peakNcc = double.NegativeInfinity;
         if (templates.Count == 0)
             return null;
 
@@ -71,6 +76,10 @@ public static class RingCandidateSelector
         foreach (var tpl in templates)
         {
             var m = TemplateMatcher.Match(tpl, audio.Samples, audio.Length, fromSample, toSample, nccMin, spectralMin);
+            // v1.2.0.0：用未被攻击沿重采改写的 PeakNcc —— Ncc 在非强匹配时可能已被换到别处。
+            var mPeak = double.IsNaN(m.PeakNcc) ? m.Ncc : m.PeakNcc;
+            if (mPeak > peakNcc)
+                peakNcc = mPeak;
             if (!m.Accepted || m.OnsetSampleIndex < 0)
             {
                 details.Add(m.Note);
@@ -100,6 +109,16 @@ public static class RingCandidateSelector
         }
 
         note = string.Join(" | ", details);
+
+        // v1.2.0.0 旁证（区分「铃没响」与「测错了」）：未命中时把全窗最高 NCC 与判定一并写进说明，
+        // 否则运维只能看到「未命中」四个字，分不清该去查麦克风还是该去查判据。
+        if (best == null && !double.IsNegativeInfinity(peakNcc))
+        {
+            note += peakNcc < TemplateMatcher.NoBellNcc
+                ? $"｜全窗最高 NCC {peakNcc:F3} ＜ {TemplateMatcher.NoBellNcc:F2}：找不到像铃的波形 → 疑为未响铃（不是测错）"
+                : $"｜全窗最高 NCC {peakNcc:F3} ≥ {TemplateMatcher.NoBellNcc:F2}：铃声在，但没过判据 → 疑为门槛过严或音色不符";
+        }
+
         return best;
     }
 

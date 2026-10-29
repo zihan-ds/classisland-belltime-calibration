@@ -160,7 +160,9 @@ public class CalibrationRunner : IDisposable
             //   把恢复中位数从 −0.11 s 拖到 −3.359 s（只留干净样本才是正确的 −0.11 s）。
             // 手动拟合另有一套「勾选即参与」的口径（含人工把拒写样本拉回来），两处刻意不同。
             var seedable = recent.Where(OffsetSampleStore.IsSeedableForRuntime).ToList();
-            var seeded = _fitter.Seed(seedable.Select(s => (s.At, s.RequiredSec)));
+            // v1.2.0.0：启动恢复若拿到双峰样本，丢掉较旧那一簇（否则此后每个窗口都被双峰拒写，
+            // 而拒写的样本又进不了估计器，最长要冻 6 小时等旧簇滑出窗口）。
+            var seeded = _fitter.Seed(seedable.Select(s => (s.At, s.RequiredSec)), trimBimodal: true);
             // v1.0.4：一行短摘要 + 内容未变不重复打（同一份摘要原先每窗口都写一遍，130+ 字）。
             Logger.InfoIfChanged("samples",
                 $"[校时] 样本 {OffsetSampleStore.Summarize(recent)} 导入{seeded}｜中位{_fitter.MedianSeconds:F3}s({_fitter.SampleCount})");
@@ -447,11 +449,12 @@ public class CalibrationRunner : IDisposable
                 var fromSample = Math.Max(settleSample, audio.SampleIndexAt(boundaryUtc - tolerance));
                 var toSample = Math.Min(audio.Length, audio.SampleIndexAt(boundaryUtc + tolerance));
 
+                var templatePeakNcc = double.NaN;   // v1.2.0.0：未命中时也拿全窗最高 NCC，用来区分「没响铃」与「测错」
                 var match = fromSample < toSample
                     ? RingCandidateSelector.SelectByTemplate(
                         TemplateLibrary.Templates, audio, fromSample, toSample,
                         boundaryWallLocal, tolerance, config.MatchNccMin, config.MatchSpectralMin,
-                        out templateNote)
+                        out templatePeakNcc, out templateNote)
                     : null;
                 if (fromSample >= toSample)
                     templateNote = "搜索区间无效（音频缓冲不足）";
@@ -472,6 +475,15 @@ public class CalibrationRunner : IDisposable
                 else
                 {
                     Logger.Info($"[校时] 模板匹配未命中（{templateNote}）。");
+
+                    // v1.2.0.0 旁证（2026-10-29 下午 5 个离群窗口）：全窗最高 NCC 极低时，问题不是判据、
+                    // 也不是测量跑偏，而是这一窗根本没有铃声——那时闸门给出的「所需偏移」没有参考价值，
+                    // 排查方向应该是「铃为什么没响」而不是「判据为什么选错」。
+                    if (!double.IsNaN(templatePeakNcc) && templatePeakNcc < TemplateMatcher.NoBellNcc)
+                    {
+                        Logger.Warn($"[校时] 本窗疑为未响铃：全窗最高 NCC 仅 {templatePeakNcc:F3}（＜ {TemplateMatcher.NoBellNcc:F2}），" +
+                                    "找不到像铃的波形。这一窗的测量不具参考价值——该查「铃为什么没响」，不是「判据为什么选错」。");
+                    }
                 }
             }
 
