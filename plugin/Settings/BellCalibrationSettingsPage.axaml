@@ -35,17 +35,17 @@
 
           <CheckBox Content="启用铃声自动校时"
                     IsChecked="{Binding IsEnabled, Mode=TwoWay}"/>
-          <TextBlock Text="总开关。关闭后本插件不再监听铃声，也不会自动应用校准结果（唯一的例外是下方「手动拟合并应用」按钮：它是一次显式的手动动作，不受本开关约束）。"
+          <TextBlock Text="总开关。关闭后不再监听铃声，也不自动调整时间（下方「手动拟合并应用」除外）。"
                      Classes="bellhint" FontSize="12" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <CheckBox Content="学习模式（默认开启）"
                     IsChecked="{Binding IsLearningMode, Mode=TwoWay}"/>
-          <TextBlock Text="学习模式下只记录铃声识别结果，不把时间偏移应用到 ClassIsland，可安全观察运行情况。"
+          <TextBlock Text="仅记录识别到的铃声和推算偏移，不修改系统时间。建议先观察几天确认识别稳定。"
                      Classes="bellhint" FontSize="12" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <CheckBox Content="自动应用校准偏移"
                     IsChecked="{Binding IsAutoApplyEnabled, Mode=TwoWay}"/>
-          <TextBlock Text="将校准得到的偏移自动应用到 ClassIsland。注意：需先关闭学习模式，此选项才会真正生效。"
+          <TextBlock Text="自动把校准结果写入 ClassIsland 时间偏移。需先关闭上方「学习模式」才生效。"
                      Classes="bellhint" FontSize="12" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
         </StackPanel>
       </Border>
@@ -54,7 +54,7 @@
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="8">
           <TextBlock Text="手动拟合" FontSize="15" FontWeight="Bold"/>
-          <TextBlock Text="按当天参与拟合的样本（默认含三类：判据写入过的、落在死区带内没写的、以及分步写入的；离群拒写的、以及旁证样本都默认不计入，可在下方样本管理里手动勾上）重新分析一次，并立即把结果写入「应用设置 → 时钟 → 时间偏移」。此动作无视总开关、学习模式与自动应用开关 —— 按下即写。"
+          <TextBlock Text="读取当天勾选的样本重新计算时间偏移，并立即应用到 ClassIsland（不受总开关或学习模式限制）。"
                      Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <Grid ColumnDefinitions="Auto,*">
@@ -70,7 +70,7 @@
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="8">
           <TextBlock Text="样本管理" FontSize="15" FontWeight="Bold"/>
-          <TextBlock Text="列出当天已落盘的样本。勾选 = 参与「手动拟合并应用」的拟合；取消勾选 = 不参与。默认勾选：判据写入过的勾选，落在死区带内没写的也勾选（当时已经够准所以没动偏移，测量同样干净），分步写入的也勾选（同一次干净测量，只是没一次走完），离群拒写的与旁证样本（仅课表窗口命中、或双窗口冲突，可信度打折、默认不参与）默认不勾选。人工随时可改，且人工结论优先；人工勾上的样本即使当初没被写入过也会参与。此标记只影响手动拟合，不改动自动应用链路的内部样本序列。「判据位置」列显示这笔样本当时被写/没写的真实原因：写入过 / 死区带内（未写）/ 步进写入 / 离群拒写 / 仅课表命中（旁证）/ 双窗口冲突（旁证）/ 大误差拒写（v1.0.5 旧数据）；v1.0.4 及更早的旧样本没有原因字段，显示为「拒写（旧数据，原因未记）」。「当时偏移」列是该次测量当时生效的偏移值（也就是你手填进「时间偏移」的那个数），不是这条样本算出来的「所需偏移」——同一段窗口里没写偏移的几条样本会显示同一个值，那是正常的。「采用偏移」列显示在当前勾选基础上把本行也纳入拟合后，手动拟合并应用会写入的偏移值（两位小数）：已勾选行显示当前拟合结果，未勾选行显示勾上后的结果，勾选变化会立即重算。手动拟合取最近 6 小时窗口（不足 3 条才放宽到全部）：窗口外的行通常不改变预览，窗口内按中位数变化，只有中位数恰好不变时才不变。「当时偏移」「采用偏移」两列都按两位小数显示，所有实际写入也统一取两位小数。"
+          <TextBlock Text="管理当天记录的铃声样本。勾选的样本会参与「手动拟合」，可根据实际听铃情况手动剔除误识别或纳入漏选的样本。「采用偏移」显示纳入该行后重新拟合的预计偏移值。"
                      Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
 
           <Grid ColumnDefinitions="Auto,*">
@@ -142,7 +142,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="铃响搜索半窗（±秒）" FontSize="13"/>
-              <TextBlock Text="模板匹配的搜索半窗（秒）。模板只在闸门未命中时兜底，以课表标称边界为中心在 ±该值内找铃声（闸门主判据的半窗是内建常量，不受本项影响）；长铃还会再向前回溯最多 8s 找这段声音的起点。" Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
+              <TextBlock Text="模板匹配的搜索范围（秒）。仅在起响沿闸门未命中时兜底生效；长铃会自动向前回溯起点。" Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
                             Minimum="1" Maximum="30" Increment="1" FormatString="0.#"
@@ -152,7 +152,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="应用死区（秒）" FontSize="13"/>
-              <TextBlock Text="所需偏移与当前偏移之差小于此值时不写入，用于抑制微小抖动" Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
+              <TextBlock Text="计算偏移与当前偏移之差小于此值时不写入，避免频繁微调。" Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
                             Minimum="0" Maximum="30" Increment="0.5" FormatString="0.#"
@@ -162,7 +162,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="单次写入上限（秒）" FontSize="13"/>
-              <TextBlock Text="本次所需偏移与当前偏移相差超过此值时只写 ±此值（分步逼近，日志记 stepped），并在屏幕上弹出提醒要求人工复核（默认 3；改完即生效，无需重启）。所需偏移超过 20s 时靠接连几个边界走完，不会一次把偏移改飞"
+              <TextBlock Text="单次最多调整的秒数。偏差过大时会自动按此步进分多次逼近，防止时间突变。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -173,7 +173,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="人工审核提醒（分步写入时弹窗）" FontSize="13"/>
-              <TextBlock Text="关闭后「分步写入」与「双窗口冲突不写」仍然照旧发生，只是都不再弹出界面提醒（只记日志）。单次写入限幅是数据安全底线，提醒只是可选的打扰"
+              <TextBlock Text="遇到需要分步调整的大偏差或识别冲突时弹出提醒；关闭后仍正常分步校准，仅不弹窗提示。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <CheckBox Grid.Column="1" VerticalAlignment="Center"
@@ -183,7 +183,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="忽略的边界时刻" FontSize="13"/>
-              <TextBlock Text="列在这里的边界不监听、不校准。格式：HH:mm，多个用逗号分隔。留空 = 每个边界都监听。只有当某几个边界反复测不到（日志里总是无可信测量）时才填。"
+              <TextBlock Text="不监听、不校准的时间点（格式 HH:mm，逗号分隔，如 12:00,18:00）。留空表示全部监听。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <TextBox Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -201,7 +201,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="识别灵敏度" FontSize="13"/>
-              <TextBlock Text="突发能量判定为「有铃声」所需超过环境噪声底的倍数（默认 2.0；越大越严格，越小越容易把环境声当铃）"
+              <TextBlock Text="铃声突发能量与环境噪声的比值门槛（默认 2.0）。数值越高越防误判，数值越低越容易捕捉微弱铃声。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -211,7 +211,7 @@
         </StackPanel>
       </Border>
 
-      <!-- ═══ 模板匹配（v0.9.0）═══ -->
+      <!-- ═══ 模板匹配（铃声样本） ═══ -->
       <Border Classes="bellcard" Background="{DynamicResource BellCardBackgroundBrush}" CornerRadius="6" Padding="14,10">
         <StackPanel Spacing="10">
           <TextBlock Text="模板匹配（铃声样本）" FontSize="15" FontWeight="Bold"/>
@@ -219,7 +219,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="启用模板匹配" FontSize="13"/>
-              <TextBlock Text="兜底判据：只在主判据「起响沿闸门」未命中时才尝试（闸门与它无关地每窗都跑）。用铃声模板做波形 + 音色匹配定位起响点，定位精度受录音条件影响，故仅作辅助。关闭后只剩闸门，两者都没命中则本次不校准。模板目录里没有可用模板时此开关不起作用。"
+              <TextBlock Text="辅助判据。导入真实铃声录音作为特征模板，在主闸门未命中或噪声较大时辅助锁定起响位置。未配置模板时自动跳过。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <CheckBox Grid.Column="1" VerticalAlignment="Center" IsChecked="{Binding EnableTemplateMatch, Mode=TwoWay}"/>
@@ -228,7 +228,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="模板目录" FontSize="13"/>
-              <TextBlock Text="相对插件配置目录（留空 = 默认 Templates）；目录内可放「上课铃.wav / 下课铃.wav」现成模板，设置页下面选的样本也会生成到这里"
+              <TextBlock Text="存放铃声模板的相对路径（留空即默认 Templates 目录）。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <TextBox Grid.Column="1" VerticalAlignment="Center" Width="130" Watermark="Templates"
@@ -238,7 +238,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="上课铃样本 / 截取区间" FontSize="13"/>
-              <TextBlock Text="选一段含上课铃声的长录音（WAV，几秒到几十秒均可），点「浏览」选择；区间写“起始秒-结束秒”，留空=自动取最响且持续 ≥1.5s 的段"
+              <TextBlock Text="选择含上课铃声的 WAV 录音。「截取区间」填起始-结束秒（如 12.0-14.5），留空则自动截取最响铃声段。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Spacing="6" Width="220">
@@ -253,7 +253,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="下课铃样本 / 截取区间" FontSize="13"/>
-              <TextBlock Text="同上；下课铃样本若为 .m4a/.mp3 需先转成 WAV"
+              <TextBlock Text="选择含下课铃声的 WAV 录音，规则同上。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Spacing="6" Width="220">
@@ -268,7 +268,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="匹配阈值：波形 NCC" FontSize="13"/>
-              <TextBlock Text="归一化互相关系数下限（越高越严格）"
+              <TextBlock Text="归一化互相关系数门槛（越接近 1.0 越严格，默认 0.60）。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -279,7 +279,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="匹配阈值：音色相似度" FontSize="13"/>
-              <TextBlock Text="32 点频段强度（dB 域）余弦相似度下限；模板与使用它的那台机器的麦克风不同源时（如手机录音）差异会更明显。本阈值主要用来拒异类铃"
+              <TextBlock Text="频段音色相似度门槛（默认 0.45）。主要用于过滤音色不符的嘈杂环境音。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <NumericUpDown Grid.Column="1" VerticalAlignment="Center" Width="130"
@@ -289,7 +289,7 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="复核提醒" FontSize="13"/>
-              <TextBlock Text="分步写入（一次改不完）或两次测量冲突时会弹提醒要求人工复核（没有冷却；可在「设置 → 提醒 → 铃声校时复核」里单独开关或调整）。这类事件低频，这里可先发一条测试提醒确认能正常弹出"
+              <TextBlock Text="单次步进调整或识别冲突时触发提示。可在此发送测试提醒，确认通知能否正常弹出。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <Button Grid.Column="1" VerticalAlignment="Center" Content="发送测试提醒" Click="OnTestReviewNotification"/>
@@ -298,18 +298,16 @@
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="调试音频转存" FontSize="13"/>
-              <TextBlock Text="⚠️ 默认关闭。开启后每个监听窗口的音频会写成 WAV（插件配置目录\Dumps），仅用于核对铃声识别结果与重建模板；这是“绝不落盘”"
+              <TextBlock Text="默认关闭。开启后将监听窗口录音保存为 WAV（存放于 Dumps 目录），仅供排查误识或采集模板。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <CheckBox Grid.Column="1" VerticalAlignment="Center" IsChecked="{Binding DebugDumpAudio, Mode=TwoWay}"/>
           </Grid>
 
-          <!-- 调试录音会随窗口累积（一学期可达 GB 级），这里给一个清理入口：
-               使用者不必去资源管理器里手动删，也就不会误删 Templates 里的铃声模板。 -->
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="清除无用录音" FontSize="13"/>
-              <TextBlock Text="只删插件配置目录\Dumps 下确实无用的调试转存录音：7 天以内的一律保留（排障还要看），离线断言（ReplayTool gate-reconcile-test）点名用到的那些永久保留，文件名认不出时刻的也保留；铃声模板、样本记录、配置与日志都不动。这些文件插件自己不再读取，删掉不影响校时。按钮点两次才生效：第一次报将删除的数量与体积、以及保留几个，10 秒内再点一次才真正删除。"
+              <TextBlock Text="清理 Dumps 目录下超过 7 天且非测试夹具的调试录音，不影响模板、设置和日志。点击后 10 秒内再次点击即确认清理。"
                          Classes="bellhint" FontSize="11" Foreground="{DynamicResource BellHintBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <Button Grid.Column="1" VerticalAlignment="Center" Content="清除无用录音" Click="OnClearDumps"/>

@@ -15,14 +15,14 @@
       <StackPanel Spacing="4">
         <TextBlock Text="铃声校时复核" FontSize="15" FontWeight="Bold"/>
         <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.75"
-                   Text="本插件在校铃校时遇到「一次改不完的较大差值」（只写一步、分步逼近）或「两次测量互相矛盾」时，会在这里弹提醒请你人工确认铃况。"/>
+                   Text="当遇到单次无法一次性消除的大偏差（需要分步调整）或两处测量结果冲突时，在此向你发出人工确认提醒。"/>
       </StackPanel>
 
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel Grid.Column="0" Spacing="2">
           <TextBlock Text="人工审核提醒（分步写入时弹窗）" FontSize="13"/>
           <TextBlock TextWrapping="Wrap" FontSize="11" Opacity="0.75"
-                     Text="关闭后仍然分步限幅写入（限幅是数据安全底线），只是不再弹提醒、只记日志。没有冷却：同一个问题每次都提醒。"/>
+                     Text="关闭后仍按安全步进正常校准，仅不再弹窗打扰（相关记录可在日志中查看）。"/>
         </StackPanel>
         <CheckBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0"
                   x:Name="ReviewEnabledToggle"/>
@@ -32,7 +32,7 @@
         <StackPanel Grid.Column="0" Spacing="2">
           <TextBlock Text="发送测试提醒" FontSize="13"/>
           <TextBlock TextWrapping="Wrap" FontSize="11" Opacity="0.75"
-                     Text="分步写入与双窗口冲突都是低频事件，可能几天才出现一次。用这个按钮随时确认提醒通道真的能弹出来（不受上面的开关约束）。"/>
+                     Text="发送一条模拟提醒，用于测试通知通道能否在界面上正常弹出（不受上方开关限制）。"/>
         </StackPanel>
         <Button Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0"
                 Content="发送测试提醒" Click="OnTestReviewNotification"/>

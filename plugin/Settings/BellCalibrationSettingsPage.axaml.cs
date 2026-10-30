@@ -191,11 +191,11 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
         var sideOnes = rows.Count(r => r.Sample.IsSideEvidence);
         var rejected = rows.Count(r => !r.Sample.Applied && !r.Sample.InDeadZone && !r.Sample.IsSideEvidence);
 
-        summary.Text = $"当天 {rows.Count} 条样本：参与手动拟合 {eligible} 条（勾选即参与）" +
-                       $"{(deadZoneOnes > 0 ? $"，其中死区带内 {deadZoneOnes} 条默认参与" : "")}" +
-                       $"{(rejected > 0 ? $"，拒写（离群/旧版大误差）{rejected} 条默认不参与（可手动勾上）" : "")}" +
-                       $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条默认不参与（判据没拿到开关窗口测量，只留课表窗口坐标/冲突记录，确认可信再勾）" : "")}" +
-                       $"{(overridden > 0 ? $"，人工调整过 {overridden} 条" : "")}。{_sampleLoadNote}";
+        summary.Text = $"当天 {rows.Count} 条样本：参与手动拟合 {eligible} 条" +
+                       $"{(deadZoneOnes > 0 ? $"，死区内 {deadZoneOnes} 条" : "")}" +
+                       $"{(rejected > 0 ? $"，拒写 {rejected} 条（默认不参与）" : "")}" +
+                       $"{(sideOnes > 0 ? $"，旁证 {sideOnes} 条（默认不参与）" : "")}" +
+                       $"{(overridden > 0 ? $"，人工修改 {overridden} 条" : "")}。{_sampleLoadNote}";
     }
 
     /// <summary>勾选变化：摘要与「采用偏移」预览都按新的勾选集合重算。</summary>
@@ -304,8 +304,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             var result = ManualFitService.Analyze(today);
             if (result == null)
             {
-                SetFitResult($"当天没有参与拟合的样本（{note}），未做任何写入。" +
-                             "参与与否由设置页「样本管理」的勾选决定，勾上即参与。");
+                SetFitResult($"当天没有可参与拟合的样本（{note}），未执行写入。可先在下方「样本管理」中勾选有效样本。");
                 Logger.Warn($"[校时] 手动拟合：{note}；无有效样本，未写入。");
                 return;
             }
@@ -313,7 +312,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             var applier = BellTimeCalibrationPlugin.OffsetApplier;
             if (applier?.IsAvailable != true)
             {
-                SetFitResult("偏移写入通道不可用（未能解析内核 Settings.TimeOffsetSeconds），拟合结果未写入。");
+                SetFitResult("时间偏移写入通道不可用，拟合结果未应用。");
                 Logger.Warn($"[校时] 手动拟合：写入通道不可用，拟合值 {result.OffsetSeconds:F2}s 未写入；{result.Note}");
                 return;
             }
@@ -325,8 +324,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             // 避免重复写入与「由 X 改为 X」这种误导性结果文字。
             if (before != null && Math.Abs(before.Value - result.OffsetSeconds) < 0.0005)
             {
-                SetFitResult($"当前偏移已等于拟合值 {before.Value:F3} 秒，未重复写入。" +
-                             $"有效样本 {result.ValidCount}/{result.TotalCount}；{result.Note}");
+                SetFitResult($"当前时间偏移已为拟合值（{before.Value:F3}s），无需重复写入。");
                 Logger.Info($"[校时] 手动拟合：目标值与当前偏移一致，跳过重复写入（幂等保护）；{result.Note}");
                 return;
             }
@@ -412,24 +410,22 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
             if (deletable == 0)
             {
                 SetClearDumpsResult(kept > 0
-                    ? $"没有可清除的调试录音（保留 {kept} 个：最近 {DumpCleaner.RetentionDays} 天以内的、以及离线断言点名用到的）。"
-                    : "没有可清除的调试录音。");
+                    ? $"暂无可清理的录音（已保留 {kept} 个 7 天内或测试用录音）。"
+                    : "暂无可清理的录音。");
                 return;
             }
 
             if ((DateTime.UtcNow - _clearDumpsArmedUtc).TotalSeconds > 10)
             {
                 _clearDumpsArmedUtc = DateTime.UtcNow;
-                SetClearDumpsResult($"将删除调试录音 {deletable} 个（{DescribeSize(bytes)}），" +
-                                    $"保留 {kept} 个（最近 {DumpCleaner.RetentionDays} 天以内的、以及离线断言点名用到的）——" +
-                                    "10 秒内再点一次「清除无用录音」即确认删除；超过 10 秒会重新回到这一步。");
+                SetClearDumpsResult($"预计删除 {deletable} 个录音（共 {DescribeSize(bytes)}），保留 {kept} 个（7 天内及测试用）——请在 10 秒内再次点击以确认清理。");
                 return;
             }
 
             _clearDumpsArmedUtc = DateTime.MinValue;
             var (deleted, freed, failed, keptAfter) = DumpCleaner.Clear(folder);
-            SetClearDumpsResult($"已删除调试录音 {deleted} 个，释放 {DescribeSize(freed)}，保留 {keptAfter} 个。" +
-                                (failed > 0 ? $"另有 {failed} 个删除失败（可能正被写入占用），详见插件日志。" : string.Empty));
+            SetClearDumpsResult($"已清理 {deleted} 个录音，释放 {DescribeSize(freed)}，保留 {keptAfter} 个。" +
+                                (failed > 0 ? $"（另有 {failed} 个正被占用未能删除）" : string.Empty));
             Logger.Info($"[校时] 清除调试录音（设置页按钮）：删除 {deleted} 个、释放 {freed} 字节；失败 {failed} 个；" +
                         $"保留 {keptAfter} 个（最近 {DumpCleaner.RetentionDays} 天以内 + 离线断言用）。");
         }
@@ -464,7 +460,7 @@ public partial class BellCalibrationSettingsPage : SettingsPageBase
 
             var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择铃声长录音样本（WAV）",
+                Title = "选择铃声录音样本（WAV）",
                 AllowMultiple = false,
                 FileTypeFilter = AudioFileTypes,
             });

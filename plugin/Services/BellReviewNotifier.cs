@@ -206,8 +206,7 @@ public sealed class BellReviewNotifier
         {
             MaskContent = NotificationContent.CreateTwoIconsMask("铃声校时需人工复核", rightIcon: "\uE7BA"),
             OverlayContent = NotificationContent.CreateSimpleTextContent(
-                "这是一条测试提醒（来自设置页「发送测试提醒」）。真实的分步写入复核提醒格式与此相同，" +
-                "会写明边界时刻、当前偏移与测得所需偏移。")
+                "这是一条测试提醒。当遇到需要分步调整的大偏差或识别冲突时，将通过此通知展示偏差详情。")
         };
 
         var ok = _sender.Send(request, m => Logger.Warn(m));
@@ -242,10 +241,9 @@ public sealed class BellReviewNotifier
             }
 
             var text =
-                $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：本次测得所需偏移 {args.RequiredOffsetSeconds:F3}s，" +
-                $"与当前偏移 {args.CurrentOffsetSeconds:F3}s 相差 {args.ChangeSeconds:+0.000;-0.000;0.000}s" +
-                $"（超过 ±{args.LimitSeconds:F1}s），本次只写入 ±{args.LimitSeconds:F1}s（步进逼近，分几个窗口走完）。" +
-                $"请人工确认铃况与校铃钟：若确实发生了人工校准或换信号源，可直接手动校准。{args.Basis}";
+                $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：测得所需偏移 {args.RequiredOffsetSeconds:F3}s，" +
+                $"与当前偏差 {args.ChangeSeconds:+0.000;-0.000;0.000}s（超过单次限制 ±{args.LimitSeconds:F1}s）。" +
+                $"本次仅步进调整 ±{args.LimitSeconds:F1}s，后续窗口将逐步对齐。请确认学校铃声是否发生人工调整。{args.Basis}";
 
             var request = new NotificationRequest
             {
@@ -304,10 +302,10 @@ public sealed class BellReviewNotifier
             static string Db(double? db) => db == null ? "n/a" : $"{db.Value:F1} dBFS";
 
             var text =
-                $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：同一段录音里两处测量互相矛盾 —— " +
-                $"开关窗口（当前偏移的位置）测到 {Clock(args.SwitchOnsetLocal)}（{Db(args.SwitchPeakDb)}），" +
-                $"课表窗口（课表边界的位置）测到 {Clock(args.ScheduleOnsetLocal)}（{Db(args.SchedulePeakDb)}）。" +
-                "本次不写入偏移（写进去的其实是杂音的坐标）。请人工确认铃况与偏移设置后再决定是否手动校准。";
+                $"边界 {args.BoundaryKind} {args.BoundaryDisplay:HH:mm:ss}：两处判定结果冲突 —— " +
+                $"当前偏移窗口测到 {Clock(args.SwitchOnsetLocal)}（{Db(args.SwitchPeakDb)}），" +
+                $"课表基准窗口测到 {Clock(args.ScheduleOnsetLocal)}（{Db(args.SchedulePeakDb)}）。" +
+                "为防止误调，本次暂不自动校准，请检查周围环境噪声或手动确认校正。";
 
             var request = new NotificationRequest
             {
