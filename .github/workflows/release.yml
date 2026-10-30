@@ -55,16 +55,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = '${{ github.ref_name }}'
-          # Release 正文 = 本版本的更新说明（去掉文件自身的 H1 标题，标题已是 Release 的 v$tag）；
+          # Release 正文 = CHANGELOG.md 里本版本的小节：小节标题是 "## v$tag · 日期"，
+          # 而 Release 标题已经是 v$tag，所以丢掉标题行，只取小节正文直到下一个 "## " 小节；
           # 末尾必须保留 CLASSISLAND_PKG_MD5 注释，插件市场索引依赖它。
           $md5Comment = (Get-Content plugin/cipx/checksums.md -Raw).Trim()
-          # 版本号一律四段：tag 是 1.1.1.0；说明文件按既有惯例用三段名（更新说明-v1.1.1.md，
-          # 与历史 更新说明-v1.0.4.md / v1.0.5.md 同一格式）。先按四段名找，再退到三段名。
-          $candidates = @("更新说明-v$tag.md", "更新说明-v$($tag -replace '\.0$').md")
-          $notes = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $notes) { throw "找不到 $tag 对应的更新说明文件（已试 $($candidates -join ' 与 ')），Release 正文无法生成" }
-          # 该文件里另有 3 行以 '# ' 开头的内容位于 bash 代码块内，
-          # 所以只能丢掉第 1 行，不能用 /^# / 起头过滤（会在代码块处截断正文）。
-          $body = (Get-Content $notes -Encoding utf8 | Select-Object -Skip 1) + $md5Comment
-          Set-Content -Path release-body.md -Value $body -Encoding utf8NoBOM
+          $lines = @(Get-Content CHANGELOG.md -Encoding utf8)
+          $start = ($lines | Select-String -SimpleMatch "## v$tag" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md 里找不到 v$tag 的小节，Release 正文无法生成" }
+          $body = @($lines[$start..($lines.Count - 1)])
+          $next = ($body | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
+          if ($next) { $body = @($body[0..($next - 2)]) }
+          $text = (@($body) -join "`n").TrimEnd()
+          Set-Content -Path release-body.md -Value ($text + "`n" + $md5Comment) -Encoding utf8NoBOM
           gh release create $tag plugin/cipx/BellTimeCalibration.cipx --title "v$tag" --notes-file release-body.md

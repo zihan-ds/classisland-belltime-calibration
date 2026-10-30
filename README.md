@@ -92,12 +92,8 @@ plugin/                       插件源码（.NET 8）
                               gate-reconcile-test / absolute-required-test / sample-manage-test / notify-test /
                               gate-guard / estimate-test / dumps-clear-test / bell-match-test 八套离线断言
 
+CHANGELOG.md                  版本更新日志（1.0.5.0 起逐版一节：改动、原因、实测数字）
 docs/HANDOFF.md               开发交接记录（含完整调试历程与实测数据）
-更新说明-v1.2.1.0.md           当前（1.2.1.0）：说明文档与设置页文案重写，无判据改动
-更新说明-v1.2.0.0.md           历史（1.2.0.0）：光圈约束、未响铃旁证、启动恢复修剪旧簇
-更新说明-v1.1.2.0.md           历史（1.1.2.0）：强匹配免攻击沿校验、闸门按峰值择优、双峰拒写、跳变确认需模板
-更新说明-v1.1.1.md             历史（1.1.1.0）：采用偏移列、两位小数写入、打包 README
-更新说明-v1.1.1.1.md           历史（1.1.1.1）：清单补 url，插件页「项目主页」指向 GitHub
 tools-harvest.ps1             批量收割录音里的铃声段并互为对照
 ```
 
@@ -271,4 +267,12 @@ ReplayTool dumps-clear-test                          # 「清除无用录音」�
 
 ## 许可
 
-未指定。如需引用或再分发请先联系作者。
+本项目以 **GNU General Public License v3.0（GPL-3.0-only）** 发布，许可全文见 [LICENSE](LICENSE)。
+
+- 允许使用、修改、再分发，包括商业用途；
+- 分发修改版或衍生作品时，必须同样以 GPL-3.0 授权并提供完整源码；
+- 本程序不提供任何担保。
+
+Copyright (C) 2026 zihan-ds
+
+随包分发的第三方组件（[SoundFlow](https://github.com/LSXPrime/SoundFlow)、miniaudio）按其上游许可分发；`plugin/Templates/` 下的铃声样本为静音占位，使用者自行录制的录音版权归录制者。
